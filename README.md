@@ -1,4 +1,4 @@
-# MiTAgent ——— An Enhanced Modular miRNA Research agent
+# MiTAgent
 > A comprehensive computational pipeline for systematic analysis of microRNA regulatory networks
 
 ## Overview
