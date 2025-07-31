@@ -1,4 +1,9 @@
-# MiTAgent
+# MiTAgent: Enhanced Modular miRNA Research Pipeline
+
+[![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/status-active-success.svg)]()
+
 > A comprehensive computational pipeline for systematic analysis of microRNA regulatory networks
 
 ## Overview
@@ -25,6 +30,7 @@ MiTAgent provides an end-to-end solution for miRNA-mRNA interaction analysis, in
 - Python 3.8+
 - 8GB+ RAM (16GB recommended)
 - 2GB disk space
+- Internet connection
 
 ### Installation
 
@@ -85,6 +91,7 @@ python main_pipeline.py \
 | **Python Version** | 3.8 or higher |
 | **Memory** | 8GB minimum, 16GB recommended |
 | **Storage** | 2GB available space |
+| **Network** | Internet connection for downloads |
 
 ### Step-by-Step Installation
 
@@ -114,6 +121,8 @@ ollama serve
 ollama pull llama3.1
 ```
 
+**Cytoscape (Optional for visualization)**
+- Download from: https://cytoscape.org/
 
 #### 3. Verify Installation
 
@@ -139,6 +148,8 @@ Download the following database files and place them in your working directory:
 | **miRDB** | `miRDB_v6.0_prediction_result_fixed.txt` | ML-based predictions | miRDB v6.0 |
 | **miRWalk** | `hsa_miRWalk_3UTR.txt` | Comprehensive database | miRWalk 3.0 |
 | **miRTarBase** | `miRTarBase_MTI_fixed.csv` | Experimental validation | miRTarBase v9.0 |
+
+Could be download from https://drive.google.com/file/d/1Pmrw44jmzRkEw8hJ51hbekhnOfS_pKjX/view?usp=drive_link
 
 ### Input Data Formats
 
@@ -524,41 +535,6 @@ df -h
 tail -f pipeline_results/run_*/pipeline_log.txt
 ```
 
----
-
-## Data Sources and Versions
-
-### Database Information
-
-| Database | Version | Last Updated | Download Source |
-|----------|---------|--------------|-----------------|
-| **TargetScan** | v8.0 | 2021 | targetscan.org |
-| **miRDB** | v6.0 | 2020 | mirdb.org |
-| **miRWalk** | v3.0 | 2019 | mirwalk.umm.uni-heidelberg.de |
-| **miRTarBase** | v9.0 | 2022 | mirtarbase.cuhk.edu.cn |
-
-### File Specifications
-
-The pipeline expects specific file formats. Contact the repository maintainer if you need assistance with file format conversion.
-
----
-
-## Performance Benchmarks
-
-### Typical Runtime (Combined Mode)
-
-| Dataset Size | Literature Mining | BERT Validation | LLM Analysis | Total Time |
-|--------------|-------------------|-----------------|--------------|------------|
-| 10 genes + 10 miRNAs | 30 min | 45 min | 60 min | ~2.5 hours |
-| 25 genes + 25 miRNAs | 90 min | 120 min | 180 min | ~6.5 hours |
-| 50 genes + 50 miRNAs | 180 min | 240 min | 360 min | ~13 hours |
-
-*Times based on max-articles=150, min-databases=3, analysis-mode=both*
-
----
-
-## Contributing
-
 ### Development Setup
 
 ```bash
@@ -617,6 +593,272 @@ This pipeline builds upon several established resources:
 - **miRTarBase** - Experimentally validated interactions (Huang et al., 2020)
 - **Hugging Face** - Pre-trained language models
 - **Ollama** - Local LLM deployment framework
+
+---
+
+## RNA-seq Analysis Module
+
+### Overview
+
+The repository includes a comprehensive RNA-seq and miRNA-seq differential expression analysis module (`rnaseq_analyzer.py`) that provides end-to-end analysis capabilities independent of the main miRNA pipeline. This hybrid Python+R tool combines the statistical rigor of DESeq2 with the flexibility of Python data processing and visualization.
+
+### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Hybrid Analysis Engine** | R+DESeq2 for statistical analysis, Python for data processing |
+| **Flexible Input Support** | Multiple file formats (CSV, TSV) with automatic encoding detection |
+| **Comprehensive Visualization** | Volcano plots, MA plots, expression heatmaps |
+| **Functional Analysis** | GO/KEGG enrichment analysis and GSEA |
+| **Configurable Workflows** | YAML/JSON configuration support for analysis parameters |
+| **Robust Sample Grouping** | Flexible pattern matching for sample classification |
+
+### System Requirements
+
+#### Required Dependencies
+```bash
+# Core packages
+pip install pandas numpy matplotlib seaborn scipy statsmodels
+pip install pathlib pyyaml
+```
+
+#### Optional Dependencies
+```bash
+# For enrichment analysis
+pip install gseapy
+
+# For gene ID conversion
+pip install mygene
+
+# For advanced normalization
+pip install scikit-learn
+```
+
+#### R Dependencies
+```r
+# Install in R console
+install.packages("BiocManager")
+BiocManager::install("DESeq2")
+install.packages("jsonlite")
+```
+
+### Installation and Setup
+
+#### Check Dependencies
+```bash
+python rnaseq_analyzer.py --check-deps
+```
+
+#### Create Configuration File
+```bash
+python rnaseq_analyzer.py --create-config
+```
+
+### Usage Examples
+
+#### Basic Differential Expression Analysis
+```bash
+python rnaseq_analyzer.py \
+    --gene-file gene_expression_matrix.csv \
+    --control Control \
+    --treatment Treatment \
+    --output-dir de_analysis_results
+```
+
+#### Comprehensive Analysis with Functional Annotation
+```bash
+python rnaseq_analyzer.py \
+    --gene-file gene_counts.csv \
+    --mirna-file mirna_counts.csv \
+    --control CT \
+    --treatment BAI \
+    --config analysis_config.yaml \
+    --output-dir comprehensive_results \
+    --padj-thresh 0.01 \
+    --log2fc-thresh 1.5
+```
+
+#### Enrichment Analysis Only
+```bash
+python rnaseq_analyzer.py \
+    --enrichment-only \
+    --output-dir results/ \
+    --skip-gsea
+```
+
+### Configuration Format
+
+The tool supports YAML configuration files for flexible analysis parameters:
+
+```yaml
+sample_groups:
+  Control:
+    patterns: ['CT_', 'CT.', 'Control_']
+    match_mode: 'prefix'
+    alias: 'Control'
+  Treatment:
+    patterns: ['B', 'G', 'Treatment_']
+    match_mode: 'prefix'
+    alias: 'Treatment'
+
+analysis:
+  min_count: 10
+  min_samples: 2
+  padj_thresh: 0.05
+  log2fc_thresh: 1.0
+  normalization_method: 'deseq2'
+
+deseq2:
+  fit_type: 'parametric'
+  test: 'Wald'
+  shrink_lfc: true
+  alpha: 0.05
+  independent_filtering: true
+
+gsea:
+  permutation_num: 1000
+  min_size: 15
+  max_size: 500
+```
+
+#### Sample Information (Auto-generated)
+The tool automatically generates sample grouping based on naming patterns defined in the configuration file.
+
+### Analysis Workflow
+
+#### Step 1: Data Loading and Validation
+- Multi-encoding support (UTF-8, Latin-1, GBK, etc.)
+- Automatic format detection (CSV, TSV)
+- Data quality assessment and preprocessing
+- Sample grouping based on naming patterns
+
+#### Step 2: Differential Expression Analysis
+- **Primary Method**: R+DESeq2 with full statistical modeling
+- **Fallback Method**: Python-based statistical tests (t-test, Mann-Whitney U)
+- Low-expression gene filtering
+- Multiple testing correction
+
+#### Step 3: Statistical Visualization
+- **Volcano Plot**: log2FC vs -log10(adjusted p-value)
+- **MA Plot**: Mean expression vs log2FC
+- **Expression Heatmap**: Hierarchical clustering of significant genes
+
+#### Step 4: Functional Analysis
+- **GO/KEGG Enrichment**: Over-representation analysis
+- **GSEA**: Gene Set Enrichment Analysis
+- **Pathway Visualization**: Enrichment plots
+
+### Command Line Parameters
+
+#### Core Parameters
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `--gene-file` | Gene expression matrix file | Required |
+| `--mirna-file` | miRNA expression matrix file | Optional |
+| `--control` | Control group identifier | `Control` |
+| `--treatment` | Treatment group identifier(s) | `Treatment` |
+| `--output-dir` | Output directory path | `results` |
+
+#### Analysis Parameters  
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `--padj-thresh` | Adjusted p-value threshold | `0.05` |
+| `--log2fc-thresh` | Log2 fold change threshold | `1.0` |
+| `--min-count` | Minimum expression count | `10` |
+| `--min-samples` | Minimum samples per group | `2` |
+
+#### Workflow Control
+| Parameter | Description |
+|-----------|-------------|
+| `--skip-enrichment` | Skip GO/KEGG analysis |
+| `--skip-gsea` | Skip GSEA analysis |
+| `--enrichment-only` | Run only enrichment analysis |
+| `--config` | Configuration file path |
+
+### Output Structure
+
+```
+results/
+├── Treatment_vs_Control_gene_differential_expression_results.csv
+├── Treatment_vs_Control_mirna_differential_expression_results.csv
+├── Treatment_vs_Control_gene_volcano.png
+├── Treatment_vs_Control_gene_ma.png
+├── Treatment_vs_Control_gene_heatmap.png
+├── Treatment_vs_Control_gene_GO_Biological_Process_enrichment.csv
+├── Treatment_vs_Control_gene_KEGG_GSEA.csv
+└── Treatment_vs_Control_gene_ranked_genes.csv
+```
+
+### Analysis Methods
+
+#### DESeq2 Integration
+The tool prioritizes R+DESeq2 for statistical analysis when available:
+- Negative binomial generalized linear models
+- Empirical Bayes shrinkage for log2 fold changes  
+- Independent filtering for multiple testing
+- Size factor normalization
+
+#### Python Fallback Methods
+When R is unavailable, the tool uses Python statistical methods:
+- CPM+log2 normalization
+- Welch's t-test or Mann-Whitney U test
+- Benjamini-Hochberg FDR correction
+
+### Troubleshooting
+
+#### Common Issues
+
+**R Installation Problems**
+```bash
+# Check R availability  
+python rnaseq_analyzer.py --check-deps
+
+# If R not found, install from:
+# https://cran.r-project.org/
+```
+
+**DESeq2 Installation Issues**
+```r
+# In R console
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("DESeq2")
+```
+
+**Memory Errors**
+- Reduce dataset size or increase system memory
+- Use `--skip-enrichment` to reduce memory usage
+- Process samples in smaller batches
+
+**Sample Grouping Issues**
+- Check sample naming patterns in configuration
+- Verify control and treatment group names
+- Use `--create-config` to generate template configuration
+
+### Integration with Main Pipeline
+
+The RNA-seq analyzer can be used to prepare differential expression files for the main miRNA pipeline:
+
+```bash
+# Step 1: Generate differential expression results
+python rnaseq_analyzer.py \
+    --gene-file raw_gene_counts.csv \
+    --mirna-file raw_mirna_counts.csv \
+    --control Control --treatment Treatment
+
+# Step 2: Use results in main pipeline
+python main_pipeline.py \
+    --mode combined \
+    --genes gene_list.txt \
+    --mirnas mirna_list.txt \
+    --gene-deseq results/Treatment_vs_Control_gene_differential_expression_results.csv \
+    --mirna-deseq results/Treatment_vs_Control_mirna_differential_expression_results.csv \
+    --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
+    --mirdb miRDB_v6.0_prediction_result_fixed.txt \
+    --mirwalk hsa_miRWalk_3UTR.txt
+```
+
+This integrated workflow enables comprehensive analysis from raw expression data to validated miRNA-target networks.
 
 ---
 
