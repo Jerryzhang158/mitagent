@@ -81,9 +81,25 @@ class MiRNAPipeline:
             return False
     
     def step1_mti_selection(self, mode: str, gene_list_file: Optional[str] = None, 
-                           mirna_list_file: Optional[str] = None) -> bool:
-        """Step 1: MTI选择"""
+                        mirna_list_file: Optional[str] = None, 
+                        existing_results_file: Optional[str] = None) -> bool:
+        """Step 1: MTI选择，支持加载已有结果"""
         try:
+            # 如果提供了已有结果文件，直接加载
+            if existing_results_file and os.path.exists(existing_results_file):
+                self.logger.info(f"Loading existing Step 1 results from: {existing_results_file}")
+                
+                if existing_results_file.endswith('.xlsx'):
+                    df = pd.read_excel(existing_results_file)
+                else:
+                    df = pd.read_csv(existing_results_file)
+                
+                # 转换为internal format
+                self.mti_results = df.to_dict('records')
+                self.logger.info(f"Loaded {len(self.mti_results)} MTI results")
+                return True
+            
+            # 原有的MTI选择逻辑（仅在没有现有结果时执行）
             if mode == 'gene':
                 if not gene_list_file:
                     raise ValueError("Gene list file required for gene mode")
@@ -118,7 +134,7 @@ class MiRNAPipeline:
         except Exception as e:
             self.logger.error(f"Step 1 failed: {e}")
             return False
-    
+        
     def step2_literature_mining(self, max_articles: int = None) -> bool:
         """Step 2: 文献挖掘"""
         try:
@@ -679,7 +695,7 @@ def main():
     parser.add_argument('-d', '--mirdb', required=True, help='miRDB database file')
     parser.add_argument('-w', '--mirwalk', required=True, help='miRWalk database file')
     parser.add_argument('-b', '--mirtarbase', help='miRTarBase database file (optional)')
-    
+    parser.add_argument('--existing-step1', help='Existing Step 1 results file to continue from')
     # Pipeline steps
     parser.add_argument('--skip-literature', action='store_true', help='Skip literature mining step')
     parser.add_argument('--skip-bert', action='store_true', help='Skip BERT validation step')
@@ -746,7 +762,7 @@ def main():
     
     # Step 1: MTI Selection
     print("\n🔍 Step 1: MTI Selection")
-    success = pipeline.step1_mti_selection(args.mode, args.genes, args.mirnas)
+    success = pipeline.step1_mti_selection(args.mode, args.genes, args.mirnas, args.existing_step1)
     if not success:
         print("❌ Step 1 failed. Exiting.")
         return 1

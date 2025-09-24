@@ -12,6 +12,7 @@ from typing import List, Dict, Tuple, Optional
 import pandas as pd
 from dataclasses import dataclass
 import warnings
+import torch
 warnings.filterwarnings('ignore')
 
 # 下载必要的NLTK数据
@@ -47,8 +48,16 @@ class MTIValidator:
             model_name: Sentence-BERT模型名称
         """
         print(f"初始化MTI验证器，加载模型: {model_name}...")
-        self.model = SentenceTransformer(model_name)
-        
+        # 修改mirna_bert.py中的模型初始化
+        self.model = SentenceTransformer(model_name, device='cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"CUDA available: {torch.cuda.is_available()}")
+        print(f"Device count: {torch.cuda.device_count()}")
+        if torch.cuda.is_available():
+            print(f"Current device: {torch.cuda.current_device()}")
+            print(f"Device name: {torch.cuda.get_device_name()}")
+
+        # 在SentenceTransformer初始化后添加：
+        print(f"Model device: {self.model.device}")
         # 评分权重配置
         self.weights = {
             'direct_relation': 0.35,      # 直接关系证据
