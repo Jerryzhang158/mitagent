@@ -23,23 +23,20 @@ MiTAgent provides an end-to-end solution for miRNA-mRNA interaction analysis, fe
 | **Flexible Execution** | Resume from any step, skip optional components |
 | **Enhanced Error Handling** | Robust error management with detailed logging |
 
----
 
-## What's New in This Version
-
-### 🏗️ Architectural Improvements
+###  Architectural Improvements
 - **Modular Design**: Separated components (`config.py`, `utils.py`, `mti_selection.py`, etc.)
 - **Centralized Configuration**: `PipelineConfig` class manages all settings
 - **Enhanced Logging**: Comprehensive logging with `Logger` class
 - **Result Integration**: `ResultsIntegrator` for seamless data flow between steps
 
-### 🔄 Pipeline Enhancements  
+###  Pipeline Enhancements  
 - **Step Continuity**: Resume analysis from existing Step 1 results with `--existing-step1`
 - **Smart Defaults**: Auto-generate DESeq2 files when not provided
 - **Flexible Execution**: Skip any combination of steps while maintaining functionality
 - **Error Recovery**: Continue pipeline execution even if individual steps fail
 
-### 🧠 Advanced Analysis
+###  Advanced Analysis
 - **Dual LLM Modes**: Both standard relationship and functional pathway analysis
 - **Enhanced Text Processing**: Improved miRNA name handling and text normalization
 - **Better Integration**: Seamless data flow between BERT validation and LLM analysis
