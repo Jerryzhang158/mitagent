@@ -4,22 +4,46 @@
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-active-success.svg)]()
 
-> A comprehensive computational pipeline for systematic analysis of microRNA regulatory networks
+> A comprehensive computational pipeline for systematic analysis of microRNA regulatory networks with enhanced modular architecture
 
 ## Overview
 
-MiTAgent provides an end-to-end solution for miRNA-mRNA interaction analysis, integrating multiple prediction databases, machine learning validation, and advanced functional interpretation. The system supports flexible analytical workflows for gene-to-miRNA, miRNA-to-gene, and bidirectional analysis.
+MiTAgent provides an end-to-end solution for miRNA-mRNA interaction analysis, featuring a completely redesigned modular architecture that integrates multiple prediction databases, machine learning validation, and advanced functional interpretation. The system supports flexible analytical workflows with improved error handling, centralized configuration, and seamless step continuity.
 
 ## Key Features
 
 | Feature | Description |
 |---------|-------------|
+| **Modular Architecture** | Component-based design with centralized configuration management |
 | **Multi-Database Integration** | TargetScan, miRDB, miRWalk, miRTarBase support |
-| **Machine Learning Validation** | BERT-based interaction validation |
-| **Literature Mining** | Automated PubMed literature retrieval |
-| **LLM Analysis** | Advanced functional interpretation |
-| **Network Visualization** | Cytoscape-compatible network generation |
-| **Modular Architecture** | Component-based design for extensibility |
+| **Machine Learning Validation** | BERT-based interaction validation with enhanced processing |
+| **Literature Mining** | Automated PubMed literature retrieval with validation |
+| **Advanced LLM Analysis** | Dual-mode analysis (Standard + Functional) with Ollama integration |
+| **Network Visualization** | Cytoscape-compatible network generation with auto-fallback |
+| **Flexible Execution** | Resume from any step, skip optional components |
+| **Enhanced Error Handling** | Robust error management with detailed logging |
+
+---
+
+## What's New in This Version
+
+### 🏗️ Architectural Improvements
+- **Modular Design**: Separated components (`config.py`, `utils.py`, `mti_selection.py`, etc.)
+- **Centralized Configuration**: `PipelineConfig` class manages all settings
+- **Enhanced Logging**: Comprehensive logging with `Logger` class
+- **Result Integration**: `ResultsIntegrator` for seamless data flow between steps
+
+### 🔄 Pipeline Enhancements  
+- **Step Continuity**: Resume analysis from existing Step 1 results with `--existing-step1`
+- **Smart Defaults**: Auto-generate DESeq2 files when not provided
+- **Flexible Execution**: Skip any combination of steps while maintaining functionality
+- **Error Recovery**: Continue pipeline execution even if individual steps fail
+
+### 🧠 Advanced Analysis
+- **Dual LLM Modes**: Both standard relationship and functional pathway analysis
+- **Enhanced Text Processing**: Improved miRNA name handling and text normalization
+- **Better Integration**: Seamless data flow between BERT validation and LLM analysis
+- **Comprehensive Reporting**: Detailed final reports with architectural improvements noted
 
 ---
 
@@ -68,275 +92,177 @@ python main_pipeline.py \
 
 ---
 
-## Table of Contents
+## Enhanced Usage Options
 
-- [Installation](#installation)
-- [Input Files](#input-files)
-- [Usage](#usage)
-- [Pipeline Steps](#pipeline-steps)
-- [Output](#output)
-- [Examples](#examples)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
+### Resume from Existing Results
 
----
-
-## Installation
-
-### System Requirements
-
-| Component | Requirement |
-|-----------|-------------|
-| **Operating System** | Linux, macOS, Windows (WSL recommended) |
-| **Python Version** | 3.8 or higher |
-| **Memory** | 8GB minimum, 16GB recommended |
-| **Storage** | 2GB available space |
-| **Network** | Internet connection for downloads |
-
-### Step-by-Step Installation
-
-#### 1. Environment Setup
+One of the major improvements is the ability to resume analysis from existing Step 1 results:
 
 ```bash
-# Clone repository
-git clone https://github.com/Jerryzhang158/mitagent.git
-cd mitagent
-
-# Create and activate conda environment
-conda env create -f environment.yml
-conda activate mirna-pipeline
+# Continue from previously generated MTI selection
+python main_pipeline.py \
+    --mode combined \
+    --existing-step1 previous_results/mti_selection_results_combined.xlsx \
+    --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
+    --mirdb miRDB_v6.0_prediction_result_fixed.txt \
+    --mirwalk hsa_miRWalk_3UTR.txt \
+    --mirtarbase miRTarBase_MTI_fixed.csv \
+    --analysis-mode both
 ```
 
-#### 2. External Dependencies
+### Flexible Step Control
 
-**Ollama (Required for LLM features)**
+The enhanced pipeline allows you to skip any combination of steps:
+
 ```bash
-# Install Ollama
-curl -fsSL https://ollama.ai/install.sh | sh
-
-# Start service
-ollama serve
-
-# Download language model
-ollama pull llama3.1
+# Skip literature mining and BERT, proceed directly to LLM analysis
+python main_pipeline.py \
+    --mode combined \
+    --genes gene_list.txt \
+    --mirnas mirna_list.txt \
+    --skip-literature \
+    --skip-bert \
+    --analysis-mode both \
+    --generate-network
 ```
 
-**Cytoscape (Optional for visualization)**
-- Download from: https://cytoscape.org/
+### Network Generation with Auto-Fallback
 
-#### 3. Verify Installation
+The pipeline now automatically generates default expression files if DESeq2 results aren't provided:
 
 ```bash
-# Test pipeline
-python main_pipeline.py --help
-
-# Check Ollama status
-ollama list
+# Network generation with auto-generated expression files
+python main_pipeline.py \
+    --mode combined \
+    --genes gene_list.txt \
+    --mirnas mirna_list.txt \
+    --generate-network \
+    --network-score-threshold 60
+    # DESeq2 files will be auto-generated if not provided
 ```
 
 ---
 
-## Input Files
+## Architecture Overview
 
-### Required Database Files
-
-Download the following database files and place them in your working directory:
-
-| Database | Filename | Description | Source |
-|----------|----------|-------------|--------|
-| **TargetScan** | `Predicted_Targets_Context_Scores.default_predictions.txt` | Conserved target predictions | TargetScan v8.0 |
-| **miRDB** | `miRDB_v6.0_prediction_result_fixed.txt` | ML-based predictions | miRDB v6.0 |
-| **miRWalk** | `hsa_miRWalk_3UTR.txt` | Comprehensive database | miRWalk 3.0 |
-| **miRTarBase** | `miRTarBase_MTI_fixed.csv` | Experimental validation | miRTarBase v9.0 |
-
-Could be download from https://drive.google.com/file/d/1Pmrw44jmzRkEw8hJ51hbekhnOfS_pKjX/view?usp=drive_link
-
-### Input Data Formats
-
-#### Gene List Format (`gene_list.txt`)
-Create a text file with one gene symbol per line:
+### Core Components
 
 ```
-TP53
-BRCA1
-EGFR
-MYC
-KRAS
-AKT1
-PIK3CA
-PTEN
+mitagent/
+├── main_pipeline.py          # Main controller with enhanced modularity
+├── config.py                 # Centralized configuration management
+├── utils.py                  # Utilities (Logger, FileUtils, ResultsIntegrator)
+├── mti_selection.py          # MTI selection logic
+├── literature_mining.py      # PubMed literature retrieval
+├── mirna_matcher.py          # miRNA name matching and normalization
+├── refseq_cache.py          # RefSeq identifier management
+├── mti_llm_summarize.py     # LLM-based analysis (optional)
+├── mti_cytoscape_network.py # Network generation (optional)
+└── rnaseq_analyzer.py       # RNA-seq differential expression
 ```
 
-#### miRNA List Format (`mirna_list.txt`)
-Create a text file with one miRNA identifier per line:
+### Data Flow
 
 ```
-hsa-miR-21-5p
-hsa-miR-155-5p
-hsa-miR-200c-3p
-hsa-miR-34a-5p
-hsa-miR-125b-5p
-hsa-miR-let-7a-5p
-```
-
-#### Differential Expression Formats
-
-**miRNA Expression** (`miRNA.csv`):
-```csv
-miRNA,baseMean,log2FoldChange,lfcSE,stat,pvalue,padj
-hsa-miR-21-5p,2500.3,1.8,0.2,9.0,2.5e-19,4.1e-18
-hsa-miR-155-5p,1800.7,2.3,0.3,7.7,1.3e-14,1.8e-13
-hsa-miR-200c-3p,950.2,-1.5,0.4,-3.8,1.4e-04,8.2e-04
-```
-
-**Gene Expression** (`mRNA.csv`):
-```csv
-mRNA,baseMean,log2FoldChange,lfcSE,stat,pvalue,padj
-TP53,1500.2,2.1,0.3,7.0,1.2e-12,3.4e-11
-BRCA1,890.5,-1.8,0.4,-4.5,6.7e-06,2.1e-05
-EGFR,2100.8,1.2,0.2,6.0,2.0e-09,3.5e-08
+Input Files → MTI Selection → Literature Mining → BERT Validation → LLM Analysis → Network Generation
+     ↓              ↓              ↓              ↓              ↓              ↓
+Config.py    ResultsIntegrator  TextProcessor  Enhanced Logging  Dual Analysis  Auto-Fallback
 ```
 
 ---
 
-## Usage
+## Command Line Parameters
 
-### Command Structure
-
-```bash
-python main_pipeline.py [REQUIRED OPTIONS] [OPTIONAL PARAMETERS]
-```
-
-### Required Parameters
+### New Parameters
 
 | Parameter | Description | Example |
 |-----------|-------------|---------|
-| `-m, --mode` | Analysis mode | `gene`, `mirna`, `combined` |
-| `-t, --targetscan` | TargetScan database file | `Predicted_Targets_Context_Scores.default_predictions.txt` |
-| `-d, --mirdb` | miRDB database file | `miRDB_v6.0_prediction_result_fixed.txt` |
-| `-w, --mirwalk` | miRWalk database file | `hsa_miRWalk_3UTR.txt` |
+| `--existing-step1` | Resume from existing Step 1 results | `previous_results.xlsx` |
+| `--analysis-mode` | LLM analysis type | `standard`, `functional`, `both` |
+| `--network-score-threshold` | Network inclusion threshold | `60` |
 
-### Input Parameters
+### Enhanced Parameters
 
-| Parameter | Description | Required For |
-|-----------|-------------|--------------|
-| `-g, --genes` | Gene list file | `gene`, `combined` modes |
-| `-r, --mirnas` | miRNA list file | `mirna`, `combined` modes |
-| `-b, --mirtarbase` | miRTarBase file | Optional (all modes) |
-
-### Analysis Options
-
-| Parameter | Description | Default | Recommended |
-|-----------|-------------|---------|-------------|
-| `--min-databases` | Minimum database support | `2` | `3` for high confidence |
-| `--max-articles` | Max articles per MTI | `50` | `100-150` for comprehensive analysis |
-| `-f, --functions` | Biological functions | `"proliferation,apoptosis,migration,invasion"` | Customize based on research |
-| `--analysis-mode` | LLM analysis type | `both` | `both` for complete analysis |
-
-### Pipeline Control
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `--skip-literature` | Skip literature mining | `False` |
-| `--skip-bert` | Skip BERT validation | `False` |
-| `--skip-llm` | Skip LLM analysis | `False` |
-| `--generate-network` | Create network files | `False` |
-
-### Network Options
-
-| Parameter | Description | Default | Example |
-|-----------|-------------|---------|---------|
-| `--mirna-deseq` | miRNA expression file | Auto-generated | `miRNA.csv` |
-| `--gene-deseq` | Gene expression file | Auto-generated | `mRNA.csv` |
-| `--network-score-threshold` | Network inclusion threshold | `50` | `60` for high confidence |
-| `-o, --output` | Output directory | `pipeline_results` | Custom path |
+| Parameter | Enhancement | Default | New Behavior |
+|-----------|-------------|---------|--------------|
+| `--skip-*` | Can skip any combination | - | Pipeline continues gracefully |
+| `--generate-network` | Auto-generates DESeq2 files | `False` | Creates defaults when files missing |
+| `--output` | Enhanced directory structure | `pipeline_results` | Improved organization |
 
 ---
 
-## Pipeline Steps
+## Pipeline Steps (Enhanced)
 
-### Step 1: MTI Selection
-**Purpose**: Identify miRNA-mRNA interactions from multiple databases
-- Multi-database consensus filtering
-- miRTarBase validation integration
-- Configurable support thresholds
+### Step 1: Enhanced MTI Selection
+**New Features**:
+- Load existing results with `--existing-step1`
+- Improved database integration through `MTISelector` class
+- Better error handling and validation
+- Enhanced logging with step progress
 
-### Step 2: Literature Mining
-**Purpose**: Retrieve relevant scientific literature
-- Automated PubMed queries
-- Rate-limited API requests
-- Literature validation and curation
+### Step 2: Robust Literature Mining  
+**New Features**:
+- File validation after download
+- Better error recovery
+- Enhanced article processing through `LiteratureMiner` class
+- Detailed download statistics
 
-### Step 3: BERT Validation
-**Purpose**: Machine learning-based interaction validation
-- Pre-trained language model analysis
-- Multi-functional relevance scoring
-- Quantitative evidence assessment
+### Step 3: Advanced BERT Validation
+**New Features**:
+- Improved miRNA name handling via `TextProcessor`
+- Better batch processing
+- Enhanced result integration
+- Graceful fallback when articles unavailable
 
-### Step 4: LLM Analysis
-**Purpose**: Advanced functional interpretation
+### Step 4: Dual-Mode LLM Analysis
+**New Features**:
+- **Standard Analysis**: Relationship summarization and evidence assessment
+- **Functional Analysis**: Pathway enrichment and systems-level interpretation  
+- **Both Modes**: Comprehensive analysis with integrated results
+- Enhanced Ollama connection management
+- Improved text processing and result integration
 
-#### Standard Analysis
-- Relationship summarization
-- Evidence strength evaluation
-- Clinical relevance assessment
-- Research gap identification
-
-#### Functional Analysis
-- Pathway enrichment
-- Disease association mapping
-- Therapeutic potential assessment
-- Systems-level interpretation
-
-### Step 5: Network Generation
-**Purpose**: Create visualization-ready network files
-- Cytoscape-compatible formats
-- Differential expression integration
-- Network topology analysis
+### Step 5: Smart Network Generation
+**New Features**:
+- Auto-generation of default DESeq2 files
+- Enhanced network statistics
+- Improved error handling
+- Better integration with expression data
 
 ---
 
-## Output
-
-### Directory Structure
+## Output Structure (Enhanced)
 
 ```
-pipeline_results/
-└── run_YYYYMMDD_HHMMSS/
-    ├── pipeline_report.txt
-    ├── pipeline_log.txt
-    ├── mirna_selection/
-    │   └── mti_selection_results_combined.xlsx
-    ├── pubmed_articles/
-    │   └── [literature files]
-    ├── bert_validation/
-    │   ├── mti_validation_results.csv
-    │   └── integrated_validation_results.csv
-    ├── llm_summaries/
-    │   ├── standard_summaries/
-    │   └── functional_analysis/
-    └── cytoscape_network/
-        ├── network.sif
-        ├── node_attributes.txt
-        └── edge_attributes.txt
+pipeline_results/run_YYYYMMDD_HHMMSS/
+├── pipeline_report.txt                    # 🆕 Enhanced with architectural notes
+├── pipeline_log.txt                       # 🆕 Comprehensive logging
+├── mirna_selection/
+│   └── mti_selection_results_combined.xlsx # Can be reused with --existing-step1
+├── pubmed_articles/                       # 🆕 Enhanced validation
+│   ├── [literature files]
+│   └── download_validation.json          # 🆕 File validation results  
+├── bert_validation/
+│   ├── mti_validation_results.csv
+│   ├── integrated_validation_results.csv  # 🆕 Enhanced integration
+│   └── batch_input.csv                    # 🆕 Batch processing data
+├── llm_summaries/                         # 🆕 Dual-mode analysis
+│   ├── standard_summaries/               # Standard relationship analysis
+│   └── functional_analysis/              # Pathway and systems analysis
+├── cytoscape_network/                     # 🆕 Enhanced with auto-fallback
+│   ├── network.sif
+│   ├── node_attributes.txt
+│   ├── edge_attributes.txt
+│   └── network_statistics.json          # 🆕 Detailed network stats
+├── default_mirna_deseq.csv              # 🆕 Auto-generated when needed
+└── default_gene_deseq.csv               # 🆕 Auto-generated when needed
 ```
-
-### Key Output Files
-
-| File | Description | Usage |
-|------|-------------|-------|
-| `integrated_validation_results.csv` | **Main results file** with all analysis data | Primary analysis output |
-| `mti_selection_results_combined.xlsx` | Initial MTI selection with database info | Database integration results |
-| `pipeline_report.txt` | Comprehensive execution summary | Analysis overview |
-| `network.sif` | Cytoscape network file | Network visualization |
 
 ---
 
-## Examples
+## Advanced Examples
 
-### Example 1: Complete Analysis (Recommended)
-
-Based on the actual usage pattern, here's the comprehensive analysis command:
+### Example 1: Complete Enhanced Analysis
 
 ```bash
 python main_pipeline.py \
@@ -349,57 +275,19 @@ python main_pipeline.py \
     --mirtarbase miRTarBase_MTI_fixed.csv \
     --mirna-deseq miRNA.csv \
     --gene-deseq mRNA.csv \
-    --functions "cell proliferation,apoptosis" \
+    --functions "cell proliferation,apoptosis,migration" \
     --max-articles 150 \
     --min-databases 3 \
     --analysis-mode both \
     --generate-network \
-    --network-score-threshold 60
+    --network-score-threshold 65 \
+    --output results/enhanced_analysis
 ```
 
-### Example 2: Gene-to-miRNA Analysis
+### Example 2: Resume and Complete Previous Analysis
 
 ```bash
-python main_pipeline.py \
-    --mode gene \
-    --genes gene_list.txt \
-    --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
-    --mirdb miRDB_v6.0_prediction_result_fixed.txt \
-    --mirwalk hsa_miRWalk_3UTR.txt \
-    --mirtarbase miRTarBase_MTI_fixed.csv \
-    --functions "proliferation,apoptosis,invasion,metastasis" \
-    --max-articles 100 \
-    --min-databases 2 \
-    --output results/gene_to_mirna_analysis
-```
-
-### Example 3: High-Throughput Analysis
-
-For large-scale studies with extensive gene/miRNA lists:
-
-```bash
-python main_pipeline.py \
-    --mode combined \
-    --genes large_gene_list.txt \
-    --mirnas large_mirna_list.txt \
-    --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
-    --mirdb miRDB_v6.0_prediction_result_fixed.txt \
-    --mirwalk hsa_miRWalk_3UTR.txt \
-    --mirtarbase miRTarBase_MTI_fixed.csv \
-    --functions "cell proliferation,apoptosis,migration,invasion,angiogenesis" \
-    --max-articles 200 \
-    --min-databases 3 \
-    --analysis-mode both \
-    --generate-network \
-    --network-score-threshold 70 \
-    --output results/comprehensive_study
-```
-
-### Example 4: Quick Analysis (Time-Limited)
-
-For rapid preliminary analysis:
-
-```bash
+# Step 1: Generate initial MTI selection
 python main_pipeline.py \
     --mode combined \
     --genes gene_list.txt \
@@ -407,163 +295,241 @@ python main_pipeline.py \
     --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
     --mirdb miRDB_v6.0_prediction_result_fixed.txt \
     --mirwalk hsa_miRWalk_3UTR.txt \
-    --skip-literature \
-    --skip-llm \
-    --min-databases 2 \
-    --generate-network \
-    --output results/quick_analysis
+    --skip-literature --skip-bert --skip-llm
+
+# Step 2: Resume with full analysis
+python main_pipeline.py \
+    --mode combined \
+    --existing-step1 pipeline_results/run_*/mirna_selection/mti_selection_results_combined.xlsx \
+    --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
+    --mirdb miRDB_v6.0_prediction_result_fixed.txt \
+    --mirwalk hsa_miRWalk_3UTR.txt \
+    --mirtarbase miRTarBase_MTI_fixed.csv \
+    --analysis-mode both \
+    --generate-network
 ```
 
----
-
-## Configuration
-
-### Biological Functions
-
-Customize biological functions based on your research focus:
+### Example 3: LLM-Only Analysis Pipeline
 
 ```bash
-# Cancer research
---functions "cell proliferation,apoptosis,invasion,metastasis,angiogenesis,drug resistance"
-
-# Metabolic research
---functions "glucose metabolism,lipid metabolism,energy production,insulin signaling"
-
-# Neurological research
---functions "neurogenesis,synaptic plasticity,neurodegeneration,memory formation"
-
-# Cardiovascular research
---functions "cardiac development,angiogenesis,hypertrophy,fibrosis"
+# For when you have literature but want to focus on LLM analysis
+python main_pipeline.py \
+    --mode combined \
+    --existing-step1 previous_mti_results.xlsx \
+    --skip-literature \
+    --skip-bert \
+    --analysis-mode both \
+    --functions "proliferation,apoptosis,invasion,metastasis" \
+    --generate-network
 ```
-
-### Analysis Modes
-
-| Mode | Description | Processing Time | Use Case |
-|------|-------------|-----------------|----------|
-| `standard` | MTI relationship analysis | Fast | Basic interaction validation |
-| `functional` | Pathway and systems analysis | Medium | Comprehensive functional interpretation |
-| `both` | Combined analysis | Slow | Complete analysis (recommended) |
-
-### Performance Tuning
-
-| Parameter | Small Dataset (<50 MTIs) | Medium Dataset (50-200 MTIs) | Large Dataset (>200 MTIs) |
-|-----------|---------------------------|------------------------------|---------------------------|
-| `--max-articles` | 150 | 100 | 50 |
-| `--min-databases` | 2 | 3 | 3 |
-| `--network-score-threshold` | 50 | 60 | 70 |
 
 ---
 
-## Troubleshooting
+## Configuration Management
 
-### Common Issues
+### Centralized Configuration
 
-#### Ollama Connection Problems
+The enhanced pipeline uses a centralized configuration system via `config.py`:
 
-**Problem**: `Cannot connect to Ollama`
+```python
+# Configuration is automatically managed
+from config import PipelineConfig
+config = PipelineConfig()
+
+# Access default functions
+config.DEFAULT_FUNCTIONS  # ['cell proliferation', 'apoptosis', ...]
+
+# Directory structure auto-created
+config.create_output_structure(results_dir)
+```
+
+### Environment Variables
+
+Set these environment variables for enhanced functionality:
+
+```bash
+export OLLAMA_HOST=http://localhost:11434  # Custom Ollama endpoint
+export MAX_BERT_BATCH_SIZE=50             # Batch processing control  
+export LOG_LEVEL=INFO                     # Logging verbosity
+```
+
+---
+
+## Error Handling and Recovery
+
+### Enhanced Error Management
+
+The new architecture provides robust error handling:
+
+```bash
+# Pipeline continues even if individual steps fail
+python main_pipeline.py \
+    --mode combined \
+    --genes gene_list.txt \
+    --mirnas mirna_list.txt \
+    # ... database files ...
+    --analysis-mode both
+    
+# Check pipeline_log.txt for detailed error information
+# Final report includes success/failure status for each step
+```
+
+### Recovery Strategies
+
+| Scenario | Solution | Command |
+|----------|----------|---------|
+| Step 1 completed, others failed | Use `--existing-step1` | `--existing-step1 results.xlsx` |
+| Literature mining timeout | Reduce articles or skip | `--max-articles 25 --skip-literature` |
+| BERT validation memory error | Skip BERT, use LLM only | `--skip-bert --analysis-mode both` |
+| Network generation failure | Check score threshold | `--network-score-threshold 40` |
+| Ollama connection issues | Check service status | `ollama serve && ollama pull llama3.1` |
+
+---
+
+## Performance and Optimization
+
+### Resource Management
+
+The enhanced pipeline provides better resource management:
+
+| Component | Memory Usage | Optimization |
+|-----------|--------------|-------------|
+| **MTI Selection** | Low (< 1GB) | Efficient database loading |
+| **Literature Mining** | Medium (2-4GB) | Batched API requests |
+| **BERT Validation** | High (4-8GB) | Configurable batch sizes |
+| **LLM Analysis** | Medium (2-6GB) | Streaming processing |
+| **Network Generation** | Low (< 2GB) | Efficient graph algorithms |
+
+### Recommended Settings
+
+| Dataset Size | Settings | Performance |
+|--------------|----------|-------------|
+| **Small** (<20 MTIs) | `--max-articles 100 --analysis-mode both` | ~30-60 min |
+| **Medium** (20-100 MTIs) | `--max-articles 75 --analysis-mode both` | ~1-3 hours |
+| **Large** (100+ MTIs) | `--max-articles 50 --analysis-mode standard` | ~3-8 hours |
+
+---
+
+## Troubleshooting (Updated)
+
+### Component-Specific Issues
+
+#### Module Import Errors
+**Problem**: `ImportError: cannot import name 'MTILLMSummarizer'`
 
 **Solution**:
 ```bash
-# Check status
-ollama list
+# Check if all modules are present
+ls -la *.py | grep -E "(config|utils|mti_|mirna_|literature_|refseq_)"
 
-# Restart service
-ollama serve
-
-# Verify model
-ollama pull llama3.1
+# Missing modules will be reported as warnings but pipeline continues
 ```
 
-#### Memory Issues
+#### Configuration Issues
+**Problem**: Pipeline configuration errors
 
-**Problem**: `Out of memory error during BERT validation`
+**Solution**:
+```bash
+# Check configuration
+python -c "from config import PipelineConfig; print('Config OK')"
 
-**Solutions**:
-- Reduce `--max-articles` to 50-100
-- Process smaller gene/miRNA lists (10-20 items per run)
-- Increase system swap space
-- Use `--skip-llm` for memory-constrained systems
+# Reset configuration if needed
+rm -f config.pyc __pycache__/config.*
+```
 
-#### Database File Issues
+#### Step Continuity Problems
+**Problem**: Cannot resume from existing results
 
-**Problem**: `Database file format error`
+**Solution**:
+```bash
+# Verify file format and location
+python -c "import pandas as pd; df = pd.read_excel('your_results.xlsx'); print(f'Shape: {df.shape}')"
 
-**Solutions**:
-- Verify file names match exactly:
-  - `Predicted_Targets_Context_Scores.default_predictions.txt`
-  - `miRDB_v6.0_prediction_result_fixed.txt`
-  - `hsa_miRWalk_3UTR.txt`
-  - `miRTarBase_MTI_fixed.csv`
-- Check file encoding (UTF-8 recommended)
-- Ensure files are not corrupted during download
+# Use absolute paths
+python main_pipeline.py --existing-step1 /full/path/to/results.xlsx
+```
 
-#### Literature Retrieval Failures
+### Enhanced Logging
 
-**Problem**: `PubMed connection timeout or rate limiting`
-
-**Solutions**:
-- Reduce `--max-articles` to 50-100
-- Check internet connection stability
-- Retry analysis after waiting period
-- Use `--skip-literature` if persistent issues
-
-#### Network Generation Failures
-
-**Problem**: `No network generated or empty network file`
-
-**Solutions**:
-- Lower `--network-score-threshold` (try 40-50)
-- Verify differential expression files format
-- Ensure sufficient validated MTIs for network construction
-- Check that `--generate-network` flag is included
-
-### Performance Monitoring
-
-Monitor system resources during analysis:
+Check detailed logs for troubleshooting:
 
 ```bash
-# Check memory usage
-free -h
-
-# Monitor CPU usage
-top
-
-# Check disk space
-df -h
-
-# View pipeline logs in real-time
+# Real-time log monitoring
 tail -f pipeline_results/run_*/pipeline_log.txt
+
+# Search for specific errors
+grep -i "error\|failed\|exception" pipeline_results/run_*/pipeline_log.txt
+
+# Check step completion status
+grep -i "step.*completed\|step.*failed" pipeline_results/run_*/pipeline_log.txt
 ```
 
-### Development Setup
+---
+
+## Development and Extension
+
+### Adding New Components
+
+The modular architecture makes it easy to add new components:
+
+```python
+# Create new module: my_analysis.py
+class MyAnalyzer:
+    def __init__(self, logger):
+        self.logger = logger
+    
+    def analyze(self, data):
+        # Your analysis logic
+        pass
+
+# Integrate in main_pipeline.py
+from my_analysis import MyAnalyzer
+
+# Add to pipeline steps
+analyzer = MyAnalyzer(self.logger)
+results = analyzer.analyze(self.validation_results)
+```
+
+### Configuration Extension
+
+Extend the configuration system:
+
+```python
+# In config.py
+class PipelineConfig:
+    def __init__(self):
+        self.MY_NEW_SETTING = "default_value"
+        self.MY_PARAMETERS = {
+            'param1': 10,
+            'param2': 'setting'
+        }
+```
+
+---
+
+## Migration from Previous Versions
+
+### Key Changes
+
+| Previous Version | Enhanced Version | Migration |
+|------------------|------------------|-----------|
+| Single file pipeline | Modular architecture | No code changes needed |
+| Basic error handling | Comprehensive error recovery | Better stability |
+| Fixed step execution | Flexible step control | New command options |
+| Manual continuation | Automatic step resumption | `--existing-step1` option |
+| Single LLM mode | Dual analysis modes | `--analysis-mode` parameter |
+
+### Backward Compatibility
+
+The enhanced pipeline maintains full backward compatibility:
 
 ```bash
-# Fork and clone
-git clone https://github.com/yourusername/mitagent.git
-cd mitagent
+# Old command still works
+python main_pipeline.py -m combined -g genes.txt -r mirnas.txt -t target.txt -d mirdb.txt -w mirwalk.txt
 
-# Create development environment
-conda env create -f environment-dev.yml
-conda activate mirna-pipeline-dev
-
-# Install in development mode
-pip install -e .
+# Enhanced features are optional
+python main_pipeline.py --mode combined --genes genes.txt --mirnas mirnas.txt --analysis-mode both
 ```
-
-### Code Standards
-
-- **Style**: Follow PEP 8 guidelines
-- **Documentation**: Comprehensive docstrings required
-- **Testing**: Unit tests for new functionality
-- **Commits**: Descriptive commit messages
-
-### Contribution Areas
-
-- Additional database integrations
-- Performance optimizations
-- New analysis methods
-- Visualization enhancements
-- Documentation improvements
 
 ---
 
@@ -574,301 +540,36 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Citation
 
 ```bibtex
-@software{mitagent_2024,
+@software{mitagent_enhanced_2024,
   title={MiTAgent: Enhanced Modular miRNA Research Pipeline},
   author={Jerry Zhang},
   year={2024},
   url={https://github.com/Jerryzhang158/mitagent},
-  version={1.0}
+  version={2.0-enhanced},
+  note={Enhanced modular architecture with improved error handling and flexible execution}
 }
 ```
 
 ## Acknowledgments
 
-This pipeline builds upon several established resources:
+This enhanced version builds upon the original MiTAgent pipeline with significant architectural improvements including modular design, centralized configuration management, enhanced error handling, and flexible execution workflows.
 
-- **TargetScan** - Conserved miRNA target predictions (Agarwal et al., 2015)
-- **miRDB** - Machine learning-based target predictions (Chen & Wang, 2020)
-- **miRWalk** - Comprehensive miRNA target database (Sticht et al., 2018)
-- **miRTarBase** - Experimentally validated interactions (Huang et al., 2020)
-- **Hugging Face** - Pre-trained language models
-- **Ollama** - Local LLM deployment framework
-
----
-
-## RNA-seq Analysis Module
-
-### Overview
-
-The repository includes a comprehensive RNA-seq and miRNA-seq differential expression analysis module (`rnaseq_analyzer.py`) that provides end-to-end analysis capabilities independent of the main miRNA pipeline. This hybrid Python+R tool combines the statistical rigor of DESeq2 with the flexibility of Python data processing and visualization.
-
-### Key Features
-
-| Feature | Description |
-|---------|-------------|
-| **Hybrid Analysis Engine** | R+DESeq2 for statistical analysis, Python for data processing |
-| **Flexible Input Support** | Multiple file formats (CSV, TSV) with automatic encoding detection |
-| **Comprehensive Visualization** | Volcano plots, MA plots, expression heatmaps |
-| **Functional Analysis** | GO/KEGG enrichment analysis and GSEA |
-| **Configurable Workflows** | YAML/JSON configuration support for analysis parameters |
-| **Robust Sample Grouping** | Flexible pattern matching for sample classification |
-
-### System Requirements
-
-#### Required Dependencies
-```bash
-# Core packages
-pip install pandas numpy matplotlib seaborn scipy statsmodels
-pip install pathlib pyyaml
-```
-
-#### Optional Dependencies
-```bash
-# For enrichment analysis
-pip install gseapy
-
-# For gene ID conversion
-pip install mygene
-
-# For advanced normalization
-pip install scikit-learn
-```
-
-#### R Dependencies
-```r
-# Install in R console
-install.packages("BiocManager")
-BiocManager::install("DESeq2")
-install.packages("jsonlite")
-```
-
-### Installation and Setup
-
-#### Check Dependencies
-```bash
-python rnaseq_analyzer.py --check-deps
-```
-
-#### Create Configuration File
-```bash
-python rnaseq_analyzer.py --create-config
-```
-
-### Usage Examples
-
-#### Basic Differential Expression Analysis
-```bash
-python rnaseq_analyzer.py \
-    --gene-file gene_expression_matrix.csv \
-    --control Control \
-    --treatment Treatment \
-    --output-dir de_analysis_results
-```
-
-#### Comprehensive Analysis with Functional Annotation
-```bash
-python rnaseq_analyzer.py \
-    --gene-file gene_counts.csv \
-    --mirna-file mirna_counts.csv \
-    --control CT \
-    --treatment BAI \
-    --config analysis_config.yaml \
-    --output-dir comprehensive_results \
-    --padj-thresh 0.01 \
-    --log2fc-thresh 1.5
-```
-
-#### Enrichment Analysis Only
-```bash
-python rnaseq_analyzer.py \
-    --enrichment-only \
-    --output-dir results/ \
-    --skip-gsea
-```
-
-### Configuration Format
-
-The tool supports YAML configuration files for flexible analysis parameters:
-
-```yaml
-sample_groups:
-  Control:
-    patterns: ['CT_', 'CT.', 'Control_']
-    match_mode: 'prefix'
-    alias: 'Control'
-  Treatment:
-    patterns: ['B', 'G', 'Treatment_']
-    match_mode: 'prefix'
-    alias: 'Treatment'
-
-analysis:
-  min_count: 10
-  min_samples: 2
-  padj_thresh: 0.05
-  log2fc_thresh: 1.0
-  normalization_method: 'deseq2'
-
-deseq2:
-  fit_type: 'parametric'
-  test: 'Wald'
-  shrink_lfc: true
-  alpha: 0.05
-  independent_filtering: true
-
-gsea:
-  permutation_num: 1000
-  min_size: 15
-  max_size: 500
-```
-
-#### Sample Information (Auto-generated)
-The tool automatically generates sample grouping based on naming patterns defined in the configuration file.
-
-### Analysis Workflow
-
-#### Step 1: Data Loading and Validation
-- Multi-encoding support (UTF-8, Latin-1, GBK, etc.)
-- Automatic format detection (CSV, TSV)
-- Data quality assessment and preprocessing
-- Sample grouping based on naming patterns
-
-#### Step 2: Differential Expression Analysis
-- **Primary Method**: R+DESeq2 with full statistical modeling
-- **Fallback Method**: Python-based statistical tests (t-test, Mann-Whitney U)
-- Low-expression gene filtering
-- Multiple testing correction
-
-#### Step 3: Statistical Visualization
-- **Volcano Plot**: log2FC vs -log10(adjusted p-value)
-- **MA Plot**: Mean expression vs log2FC
-- **Expression Heatmap**: Hierarchical clustering of significant genes
-
-#### Step 4: Functional Analysis
-- **GO/KEGG Enrichment**: Over-representation analysis
-- **GSEA**: Gene Set Enrichment Analysis
-- **Pathway Visualization**: Enrichment plots
-
-### Command Line Parameters
-
-#### Core Parameters
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `--gene-file` | Gene expression matrix file | Required |
-| `--mirna-file` | miRNA expression matrix file | Optional |
-| `--control` | Control group identifier | `Control` |
-| `--treatment` | Treatment group identifier(s) | `Treatment` |
-| `--output-dir` | Output directory path | `results` |
-
-#### Analysis Parameters  
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `--padj-thresh` | Adjusted p-value threshold | `0.05` |
-| `--log2fc-thresh` | Log2 fold change threshold | `1.0` |
-| `--min-count` | Minimum expression count | `10` |
-| `--min-samples` | Minimum samples per group | `2` |
-
-#### Workflow Control
-| Parameter | Description |
-|-----------|-------------|
-| `--skip-enrichment` | Skip GO/KEGG analysis |
-| `--skip-gsea` | Skip GSEA analysis |
-| `--enrichment-only` | Run only enrichment analysis |
-| `--config` | Configuration file path |
-
-### Output Structure
-
-```
-results/
-├── Treatment_vs_Control_gene_differential_expression_results.csv
-├── Treatment_vs_Control_mirna_differential_expression_results.csv
-├── Treatment_vs_Control_gene_volcano.png
-├── Treatment_vs_Control_gene_ma.png
-├── Treatment_vs_Control_gene_heatmap.png
-├── Treatment_vs_Control_gene_GO_Biological_Process_enrichment.csv
-├── Treatment_vs_Control_gene_KEGG_GSEA.csv
-└── Treatment_vs_Control_gene_ranked_genes.csv
-```
-
-### Analysis Methods
-
-#### DESeq2 Integration
-The tool prioritizes R+DESeq2 for statistical analysis when available:
-- Negative binomial generalized linear models
-- Empirical Bayes shrinkage for log2 fold changes  
-- Independent filtering for multiple testing
-- Size factor normalization
-
-#### Python Fallback Methods
-When R is unavailable, the tool uses Python statistical methods:
-- CPM+log2 normalization
-- Welch's t-test or Mann-Whitney U test
-- Benjamini-Hochberg FDR correction
-
-### Troubleshooting
-
-#### Common Issues
-
-**R Installation Problems**
-```bash
-# Check R availability  
-python rnaseq_analyzer.py --check-deps
-
-# If R not found, install from:
-# https://cran.r-project.org/
-```
-
-**DESeq2 Installation Issues**
-```r
-# In R console
-if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-BiocManager::install("DESeq2")
-```
-
-**Memory Errors**
-- Reduce dataset size or increase system memory
-- Use `--skip-enrichment` to reduce memory usage
-- Process samples in smaller batches
-
-**Sample Grouping Issues**
-- Check sample naming patterns in configuration
-- Verify control and treatment group names
-- Use `--create-config` to generate template configuration
-
-### Integration with Main Pipeline
-
-The RNA-seq analyzer can be used to prepare differential expression files for the main miRNA pipeline:
-
-```bash
-# Step 1: Generate differential expression results
-python rnaseq_analyzer.py \
-    --gene-file raw_gene_counts.csv \
-    --mirna-file raw_mirna_counts.csv \
-    --control Control --treatment Treatment
-
-# Step 2: Use results in main pipeline
-python main_pipeline.py \
-    --mode combined \
-    --genes gene_list.txt \
-    --mirnas mirna_list.txt \
-    --gene-deseq results/Treatment_vs_Control_gene_differential_expression_results.csv \
-    --mirna-deseq results/Treatment_vs_Control_mirna_differential_expression_results.csv \
-    --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
-    --mirdb miRDB_v6.0_prediction_result_fixed.txt \
-    --mirwalk hsa_miRWalk_3UTR.txt
-```
-
-This integrated workflow enables comprehensive analysis from raw expression data to validated miRNA-target networks.
+**Key Dependencies**:
+- **Database Resources**: TargetScan, miRDB, miRWalk, miRTarBase  
+- **Machine Learning**: Hugging Face Transformers, BERT models
+- **LLM Integration**: Ollama framework with local model deployment
+- **Visualization**: Cytoscape network export capabilities
+- **Development**: Enhanced Python architecture with component separation
 
 ---
 
 ## Support
 
-- **Documentation**: Check this README and inline documentation
-- **Bug Reports**: [Open an issue](https://github.com/Jerryzhang158/mitagent/issues)
-- **Feature Requests**: [Submit a feature request](https://github.com/Jerryzhang158/mitagent/issues)
-- **Contact**: Open an issue for questions and support
+- **Documentation**: This enhanced README with architectural details
+- **Bug Reports**: [Open an issue](https://github.com/Jerryzhang158/mitagent/issues) with component information
+- **Feature Requests**: [Submit enhancement requests](https://github.com/Jerryzhang158/mitagent/issues)
+- **Technical Support**: Include pipeline logs and configuration details
 
 ---
 
-**Star this repository if it helps your research!**
+**Enhanced Modular Architecture - More Reliable, Flexible, and Extensible!**
