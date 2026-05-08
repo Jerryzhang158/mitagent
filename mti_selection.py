@@ -143,7 +143,7 @@ class MTISelector:
             return None
     
     def get_experimental_validation(self, mirna: str, gene: str) -> Dict[str, any]:
-        """查询miRTarBase中的实验验证信息 - 增强版支持多物种"""
+        """查询miRTarBase中的实验验证信息 - 增强版：多记录聚合+优先识别Strong验证"""
         if self.mirtarbase_df is None:
             return {
                 'has_validation': False,
@@ -182,38 +182,183 @@ class MTISelector:
             return {
                 'has_validation': False,
                 'support_type': None,
-                'validation_strength': 'No experimental validation found'
+                'validation_strength': 'Not Validated'
             }
         
-        # 分析支持类型
-        support_types = matches['Support Type'].unique()
+        # ========== 聚合多条记录，优先识别Strong验证 ==========
         
-        # 确定验证强度
-        has_functional = any('Functional MTI' in st and 'Weak' not in st for st in support_types)
-        has_functional_weak = any('Functional MTI (Weak)' in st for st in support_types)
-        has_nonfunctional = any('Non-Functional MTI' in st for st in support_types)
+        # 1. 收集所有Support Type
+        all_support_types = matches['Support Type'].dropna().unique().tolist()
         
-        if has_functional:
-            validation_strength = 'Strong experimental validation'
+        # 2. 收集所有Experiments（如果列存在）
+        all_experiments = []
+        if 'Experiments' in matches.columns:
+            for exp_str in matches['Experiments'].dropna().unique():
+                if pd.notna(exp_str):
+                    all_experiments.extend([e.strip() for e in str(exp_str).replace(';', ',').split(',')])
+        
+        all_experiments = list(set(all_experiments))  # 去重
+        
+        # 3. 定义强验证标准
+        strong_experiment_keywords = [
+            'luciferase reporter assay',
+            'luciferase assay',
+            'reporter assay',
+            'qrt-pcr',
+            'qpcr',
+            'western blot',
+            'western',
+            'immunoblot'
+        ]
+        
+        # 检查是否包含强实验证据
+        has_strong_experiment = False
+        if all_experiments:
+            experiments_lower = [exp.lower() for exp in all_experiments]
+            has_strong_experiment = any(
+                any(keyword in exp for keyword in strong_experiment_keywords)
+                for exp in experiments_lower
+            )
+        
+        # 检查Support Type是否包含Functional MTI（非Weak）
+        has_functional_mti = any(
+            'functional mti' in st.lower() and 'weak' not in st.lower()
+            for st in all_support_types
+        )
+        
+        # 检查是否有Non-Functional证据
+        has_nonfunctional = any(
+            'non-functional' in st.lower()
+            for st in all_support_types
+        )
+        
+        # 4. 决定验证强度（优先级：Strong > Moderate > Weak > Not Validated）
+        if has_functional_mti or has_strong_experiment:
+            validation_strength = 'Strong'
             has_validation = True
-        elif has_functional_weak:
-            validation_strength = 'Weak experimental validation'
+            primary_support = 'Functional MTI' if has_functional_mti else 'Strong experimental evidence'
+        elif not has_nonfunctional:
+            validation_strength = 'Moderate'
             has_validation = True
-        elif has_nonfunctional:
-            validation_strength = 'Non-functional (experimental negative)'
-            has_validation = False
+            primary_support = '; '.join(all_support_types[:2])
+        elif has_nonfunctional and len(all_support_types) > 1:
+            validation_strength = 'Weak'
+            has_validation = True
+            primary_support = 'Mixed evidence'
         else:
-            validation_strength = 'Experimental evidence (unclassified)'
-            has_validation = True
+            validation_strength = 'Not Validated'
+            has_validation = False
+            primary_support = 'Non-Functional MTI'
+        
+        # 5. 收集PMID
+        pmids = []
+        if 'References (PMID)' in matches.columns:
+            pmids = matches['References (PMID)'].dropna().astype(str).unique().tolist()
         
         return {
             'has_validation': has_validation,
-            'support_type': '; '.join(support_types),
+            'support_type': primary_support,
             'validation_strength': validation_strength,
-            'experiments': '; '.join(matches['Experiments'].unique()) if 'Experiments' in matches.columns else 'N/A',
-            'pmids': '; '.join(matches['References (PMID)'].astype(str).unique()) if 'References (PMID)' in matches.columns else 'N/A'
+            'all_support_types': '; '.join(all_support_types) if all_support_types else 'N/A',
+            'all_experiments': '; '.join(all_experiments) if all_experiments else 'N/A',
+            'num_records': len(matches),
+            'pmids': '; '.join(pmids[:5]) if pmids else 'N/A'
         }
     
+    def _get_mirtarbase_strong_pairs(self,
+                                     gene_filter: Optional[Set[str]] = None,
+                                     mirna_filter: Optional[Set[str]] = None) -> List[Dict[str, any]]:
+        """
+        从miRTarBase中提取Strong验证的MTI pair，作为独立pair来源。
+        Strong标准：Functional MTI（非Weak）或包含Luciferase/Western Blot等强实验方法。
+        
+        Args:
+            gene_filter:  若提供，只保留基因在此集合中的pair（gene mode / combined mode）
+            mirna_filter: 若提供，只保留miRNA在此集合中的pair（mirna mode / combined mode）
+        """
+        if self.mirtarbase_df is None:
+            return []
+        
+        df = self.mirtarbase_df.copy()
+        
+        # 只保留human miRNA
+        df = df[df['miRNA'].str.startswith('hsa-', na=False)]
+        
+        strong_experiment_keywords = [
+            'luciferase reporter assay', 'luciferase assay', 'reporter assay',
+            'qrt-pcr', 'qpcr', 'western blot', 'western', 'immunoblot'
+        ]
+        
+        def is_strong(row):
+            support = str(row.get('Support Type', '')).lower()
+            has_functional = (
+                'functional mti' in support
+                and 'non-functional' not in support
+                and 'weak' not in support
+            )
+            experiments = str(row.get('Experiments', '')).lower()
+            has_strong_exp = any(kw in experiments for kw in strong_experiment_keywords)
+            return has_functional or has_strong_exp
+        
+        strong_mask = df.apply(is_strong, axis=1)
+        strong_df = df[strong_mask]
+        
+        if strong_df.empty:
+            return []
+        
+        # 应用list约束
+        if gene_filter:
+            strong_df = strong_df[strong_df['Target Gene'].isin(gene_filter)]
+        
+        if mirna_filter:
+            # 用标准化匹配，兼容命名差异
+            normalized_filter = {
+                self.mirna_matcher.normalize_mirna_name(m) for m in mirna_filter
+            }
+            strong_df = strong_df[
+                strong_df['miRNA'].apply(
+                    lambda m: self.mirna_matcher.normalize_mirna_name(m) in normalized_filter
+                )
+            ]
+        
+        if strong_df.empty:
+            return []
+        
+        # 去重（同一pair可能有多条记录）并构建结果
+        seen_pairs = set()
+        results = []
+        
+        for _, row in strong_df.iterrows():
+            mirna = str(row['miRNA']).strip()
+            gene = str(row['Target Gene']).strip()
+            pair_key = (mirna, gene)
+            
+            if pair_key in seen_pairs:
+                continue
+            seen_pairs.add(pair_key)
+            
+            # 建立文件名映射
+            simplified_mirna = TextProcessor.extract_mirna_core(mirna)
+            if simplified_mirna:
+                self.filename_mapping[f"{gene}_{mirna}"] = f"{gene}_{simplified_mirna}"
+            
+            results.append({
+                'Gene': gene,
+                'miRNA': mirna,
+                'Direction': 'miRTarBase',
+                'Databases': 1,
+                'Priority': 'High',
+                'Database_Sources': 'miRTarBase',
+                'miRTarBase_Validation': True,
+                'miRTarBase_Support_Type': str(row.get('Support Type', '')),
+                'Validation_Strength': 'Strong'
+            })
+        
+        if self.logger:
+            self.logger.info(f"miRTarBase Strong pairs extracted: {len(results)}")
+        
+        return results
+
     def find_mirna_for_gene(self, gene_name: str, databases: Dict[str, pd.DataFrame]) -> Dict[str, any]:
         """增强版基因到miRNA搜索，支持模糊匹配，返回原始全称miRNA"""
         refseq_ids = self.refseq_manager.convert_gene_to_refseq(gene_name)
@@ -275,7 +420,6 @@ class MTISelector:
                 candidates.append(targetscan_mapping[normalized_name])
             if normalized_name in mirdb_mapping:
                 candidates.append(mirdb_mapping[normalized_name])
-            
             return max(candidates, key=len) if candidates else normalized_name
         
         # 转换交集结果
@@ -441,7 +585,6 @@ class MTISelector:
             for miRNA in all_inter:
                 validation_info = self.get_experimental_validation(miRNA, gene_name)
                 
-                # 建立文件名映射
                 simplified_mirna = TextProcessor.extract_mirna_core(miRNA)
                 if simplified_mirna:
                     file_key = f"{gene_name}_{simplified_mirna}"
@@ -461,7 +604,6 @@ class MTISelector:
             
             # 如果min_databases <= 2，也收集2个数据库的交集
             if self.min_databases <= 2:
-                # 处理2数据库交集
                 for intersection, db_sources in [
                     (mw_ts - all_inter, 'TargetScan,miRWalk'),
                     (mw_md - all_inter, 'miRDB,miRWalk'),
@@ -487,10 +629,16 @@ class MTISelector:
                             'Validation_Strength': validation_info['validation_strength']
                         })
         
+        # ===== 新增：加入miRTarBase Strong pairs（基因约束）=====
+        gene_set = set(genes)
+        mirtarbase_pairs = self._get_mirtarbase_strong_pairs(gene_filter=gene_set)
+        mti_results = ResultsIntegrator.merge_mti_results(mti_results + mirtarbase_pairs)
+        
         if self.logger:
             self.logger.info(f"Found {len(mti_results)} MTIs from gene-to-miRNA search")
             self.logger.info(f"  - In 3 databases: {sum(1 for m in mti_results if m['Databases'] == 3)}")
             self.logger.info(f"  - In 2 databases: {sum(1 for m in mti_results if m['Databases'] == 2)}")
+            self.logger.info(f"  - miRTarBase only: {sum(1 for m in mti_results if m['Database_Sources'] == 'miRTarBase')}")
             
             validated_count = sum(1 for m in mti_results if m['miRTarBase_Validation'])
             self.logger.info(f"  - With experimental validation: {validated_count}")
@@ -506,7 +654,7 @@ class MTISelector:
             self.logger.info("="*50)
         
         # 读取miRNA列表
-        mirnas = FileUtils.load_gene_list(mirna_list_file)  # 重用函数
+        mirnas = FileUtils.load_gene_list(mirna_list_file)
         if not mirnas:
             raise ValueError(f"Could not load miRNAs from {mirna_list_file}")
         
@@ -544,7 +692,6 @@ class MTISelector:
                 mti['miRTarBase_Support_Type'] = validation_info['support_type']
                 mti['Validation_Strength'] = validation_info['validation_strength']
                 
-                # 建立文件名映射
                 simplified_mirna = TextProcessor.extract_mirna_core(mti['miRNA'])
                 if simplified_mirna:
                     file_key = f"{mti['Gene']}_{simplified_mirna}"
@@ -552,11 +699,20 @@ class MTISelector:
             
             all_mti_results.extend(mti_results)
         
+        # ===== 新增：加入miRTarBase Strong pairs（miRNA约束，gene_filter可选）=====
+        mirna_set = set(mirnas)
+        mirtarbase_pairs = self._get_mirtarbase_strong_pairs(
+            gene_filter=gene_filter,   # 如果有gene filter同样约束
+            mirna_filter=mirna_set
+        )
+        all_mti_results = ResultsIntegrator.merge_mti_results(all_mti_results + mirtarbase_pairs)
+        
         if self.logger:
             self.logger.info(f"Found {len(all_mti_results)} MTIs from miRNA-to-gene search")
             self.logger.info(f"  - In 3 databases: {sum(1 for m in all_mti_results if m['Databases'] == 3)}")
             self.logger.info(f"  - In 2 databases: {sum(1 for m in all_mti_results if m['Databases'] == 2)}")
             self.logger.info(f"  - In 1 database: {sum(1 for m in all_mti_results if m['Databases'] == 1)}")
+            self.logger.info(f"  - miRTarBase only: {sum(1 for m in all_mti_results if m['Database_Sources'] == 'miRTarBase')}")
             
             validated_count = sum(1 for m in all_mti_results if m['miRTarBase_Validation'])
             self.logger.info(f"  - With experimental validation: {validated_count}")
@@ -579,6 +735,8 @@ class MTISelector:
             self.logger.info("="*50)
         
         # 执行两种搜索
+        # 注意：1A和1B内部已各自加入了miRTarBase Strong pairs
+        # combined模式下，再额外加一次双约束的miRTarBase pairs做补充
         gene_to_mirna_results = []
         mirna_to_gene_results = []
         
@@ -586,42 +744,48 @@ class MTISelector:
             gene_to_mirna_results = self.gene_to_mirna_selection(gene_list_file, databases)
         
         if mirna_list_file and os.path.exists(mirna_list_file):
-            # 传入gene_list_file作为过滤器
             mirna_to_gene_results = self.mirna_to_gene_selection(mirna_list_file, databases, gene_list_file)
         
         # 合并结果并去重
         all_mti_results = gene_to_mirna_results + mirna_to_gene_results
-        mti_results = ResultsIntegrator.merge_mti_results(all_mti_results)
+        
+        # ===== 新增：加入miRTarBase Strong pairs（gene + miRNA双约束）=====
+        # 1A只约束了gene，1B约束了mirna+gene_filter，
+        # 这里再做一次双约束确保combined模式下两边都受限的pair也被捕获
+        gene_set = FileUtils.load_gene_list(gene_list_file) or set()
+        mirna_set = FileUtils.load_gene_list(mirna_list_file) or set()
+        mirtarbase_pairs = self._get_mirtarbase_strong_pairs(
+            gene_filter=gene_set,
+            mirna_filter=mirna_set
+        )
+        all_mti_results = ResultsIntegrator.merge_mti_results(all_mti_results + mirtarbase_pairs)
         
         if self.logger:
-            self.logger.info(f"Total unique MTIs after combining: {len(mti_results)}")
-            self.logger.info(f"  - From gene search only: {sum(1 for m in mti_results if m['Direction'] == 'Gene→miRNA')}")
-            self.logger.info(f"  - From miRNA search only: {sum(1 for m in mti_results if m['Direction'] == 'miRNA→Gene')}")
-            self.logger.info(f"  - Bidirectional (found by both): {sum(1 for m in mti_results if m['Direction'] == 'Bidirectional')}")
-            self.logger.info(f"  - In 3 databases: {sum(1 for m in mti_results if m['Databases'] == 3)}")
-            self.logger.info(f"  - In 2 databases: {sum(1 for m in mti_results if m['Databases'] == 2)}")
-            self.logger.info(f"  - In 1 database: {sum(1 for m in mti_results if m['Databases'] == 1)}")
+            self.logger.info(f"Total unique MTIs after combining: {len(all_mti_results)}")
+            self.logger.info(f"  - From gene search only: {sum(1 for m in all_mti_results if m['Direction'] == 'Gene→miRNA')}")
+            self.logger.info(f"  - From miRNA search only: {sum(1 for m in all_mti_results if m['Direction'] == 'miRNA→Gene')}")
+            self.logger.info(f"  - Bidirectional (found by both): {sum(1 for m in all_mti_results if m['Direction'] == 'Bidirectional')}")
+            self.logger.info(f"  - miRTarBase only: {sum(1 for m in all_mti_results if m['Direction'] == 'miRTarBase')}")
+            self.logger.info(f"  - In 3 databases: {sum(1 for m in all_mti_results if m['Databases'] == 3)}")
+            self.logger.info(f"  - In 2 databases: {sum(1 for m in all_mti_results if m['Databases'] == 2)}")
+            self.logger.info(f"  - In 1 database: {sum(1 for m in all_mti_results if m['Databases'] == 1)}")
             
-            validated_count = sum(1 for m in mti_results if m.get('miRTarBase_Validation', False))
+            validated_count = sum(1 for m in all_mti_results if m.get('miRTarBase_Validation', False))
             self.logger.info(f"  - With experimental validation: {validated_count}")
         
-        return mti_results
+        return all_mti_results
     
     def save_results(self, mti_results: List[Dict[str, any]], output_file: str, mode: str):
         """保存MTI选择结果"""
-        # 转换为DataFrame
         df = pd.DataFrame(mti_results)
         
-        # 创建统计摘要
         summary_data = ResultsIntegrator.create_summary_stats(mti_results)
         
-        # 创建验证统计
         validation_stats = {}
         if mti_results:
             for strength in set(m.get('Validation_Strength', 'Unknown') for m in mti_results):
                 validation_stats[strength] = sum(1 for m in mti_results if m.get('Validation_Strength') == strength)
         
-        # 保存到Excel
         FileUtils.save_excel_with_summary(df, output_file, summary_data, validation_stats)
         
         if self.logger:

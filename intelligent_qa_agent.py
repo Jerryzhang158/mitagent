@@ -104,7 +104,7 @@ class OptimizedQuestionRoutingAgent:
             from langchain_community.llms import Ollama
             
             # Choose smaller model for classification (better speed)
-            preferred_models = ['llama3.1:8b', 'llama3:8b', 'qwen3:8b', 'mistral:7b']
+            preferred_models = ['qwen3.5:9b', 'llama3:8b', 'qwen3:8b', 'mistral:7b']
             selected_model = None
             
             for model in preferred_models:
@@ -384,7 +384,7 @@ class OptimizedContentRetrievalAgent:
                 return None
             
             from langchain_community.llms import Ollama
-            preferred_models = ['qwen3:8b', 'llama3.1', 'llama3', 'mistral']
+            preferred_models = ['qwen3.5:9b', 'llama3.1', 'llama3', 'mistral']
             
             for model in preferred_models:
                 if any(model.split(':')[0] in available_model.lower() for available_model in models):

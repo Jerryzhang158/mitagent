@@ -2158,7 +2158,12 @@ class HybridRNASeqAnalyzer:
             # 默认基因集
             return ['GO_Biological_Process_2021', 'KEGG_2019_Human']
     
-    def plot_enrichment(self, enrichment_result, gene_set_name, top_n=20, figsize=(12, 8)):
+    def plot_enrichment(self, enrichment_result, gene_set_name, top_n=20, label_fontsize=16,
+        axis_fontsize=18,
+        title_fontsize=20,
+        tick_fontsize=15,
+        colorbar_fontsize=16,
+        figsize=(16, 12)):
         """绘制富集分析结果"""
         logger.info(f"开始绘制富集分析图: {gene_set_name}")
         
@@ -2238,7 +2243,8 @@ class HybridRNASeqAnalyzer:
                                                  norm=plt.Normalize(vmin=p_values.min(), vmax=p_values.max()))
                         sm.set_array([])
                         cbar = plt.colorbar(sm, ax=plt.gca())
-                        cbar.set_label(p_col)
+                        cbar.set_label(p_col, fontsize=colorbar_fontsize)
+                        cbar.ax.tick_params(labelsize=tick_fontsize)
                     except Exception as e:
                         logger.warning(f"添加颜色条失败: {e}")
             
@@ -2254,9 +2260,11 @@ class HybridRNASeqAnalyzer:
                 else:
                     term_labels.append(str(term))
             
-            plt.yticks(y_pos, term_labels)
-            plt.xlabel(score_column)
-            plt.title(f'{gene_set_name} Enrichment Analysis (Top {len(result_df)})')
+            plt.yticks(y_pos, term_labels, fontsize=label_fontsize)
+            plt.xlabel(score_column, fontsize=axis_fontsize)
+            plt.xticks(fontsize=tick_fontsize)
+            plt.title(f'{gene_set_name} Enrichment Analysis (Top {len(result_df)})', 
+                     fontsize=title_fontsize, fontweight='bold')
             plt.tight_layout()
             
             logger.info(f"成功生成富集分析图: {gene_set_name}")

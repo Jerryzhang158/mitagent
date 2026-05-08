@@ -232,7 +232,6 @@ class ResultsIntegrator:
     
     @staticmethod
     def merge_mti_results(results_list: List[Dict], unique_key_func=None) -> List[Dict]:
-        """合并MTI结果，去重并整合信息"""
         if not unique_key_func:
             unique_key_func = lambda x: (x['Gene'], x['miRNA'])
         
@@ -250,11 +249,26 @@ class ResultsIntegrator:
                 if existing['Direction'] != mti['Direction']:
                     existing['Direction'] = 'Bidirectional'
                 
-                # 取更高的数据库数量
-                if mti.get('Databases', 0) > existing.get('Databases', 0):
-                    existing['Databases'] = mti['Databases']
-                    existing['Priority'] = mti.get('Priority', existing.get('Priority'))
-                    existing['Database_Sources'] = mti.get('Database_Sources', existing.get('Database_Sources'))
+                # 合并Database_Sources（追加而不是覆盖）
+                existing_sources = set(existing.get('Database_Sources', '').split(','))
+                new_sources = set(mti.get('Database_Sources', '').split(','))
+                merged_sources = existing_sources | new_sources
+                merged_sources.discard('')
+                existing['Database_Sources'] = ','.join(sorted(merged_sources))
+                
+                # 数据库数量用合并后的source数重新计算
+                existing['Databases'] = len(merged_sources)
+                
+                # Priority取更高的
+                priority_order = {'High': 3, 'Medium': 2, 'Low': 1}
+                if priority_order.get(mti.get('Priority', 'Low'), 1) > priority_order.get(existing.get('Priority', 'Low'), 1):
+                    existing['Priority'] = mti['Priority']
+                
+                # miRTarBase验证信息：有就保留
+                if mti.get('miRTarBase_Validation'):
+                    existing['miRTarBase_Validation'] = True
+                    existing['miRTarBase_Support_Type'] = mti.get('miRTarBase_Support_Type')
+                    existing['Validation_Strength'] = mti.get('Validation_Strength')
         
         return list(unique_mtis.values())
     
