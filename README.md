@@ -19,6 +19,8 @@ MiTAgent provides an end-to-end solution for miRNA-mRNA interaction analysis, fe
 | **Machine Learning Validation** | BERT-based interaction validation with enhanced processing |
 | **Literature Mining** | Automated PubMed literature retrieval with validation |
 | **Advanced LLM Analysis** | Dual-mode analysis (Standard + Functional) with Ollama integration |
+| **PubMed Functional Keyword Extraction** | Standalone `extractor/` workflow for PubMed keyword ranking across author keywords, MeSH, TF-IDF, YAKE, and Borda fusion |
+| **GO/KEGG LLM Summarization** | Standalone Ollama utility that reads GO/KEGG CSV files, chooses exactly three functional terms from the provided list, and saves validated summaries |
 | **Network Visualization** | Cytoscape-compatible network generation with auto-fallback |
 | **Flexible Execution** | Resume from any step, skip optional components |
 | **Enhanced Error Handling** | Robust error management with detailed logging |
@@ -40,17 +42,33 @@ MiTAgent provides an end-to-end solution for miRNA-mRNA interaction analysis, fe
    cd mitagent
    ```
 
-2. **Create conda environment**
+2. **Create Python environment**
    ```bash
    conda env create -f environment.yml
-   conda activate mirna-pipeline
+   conda activate mitagent
+   ```
+
+   If Conda cannot solve the full environment on your machine, create a lighter environment and install the core packages manually:
+
+   ```bash
+   conda create -n mitagent python=3.11
+   conda activate mitagent
+   pip install pandas numpy requests biopython openpyxl scikit-learn matplotlib seaborn
+
+   # Optional modules used by LLM / enrichment / network workflows
+   pip install langchain langchain-community gseapy networkx
    ```
 
 3. **Install Ollama** (for LLM analysis)
    ```bash
    curl -fsSL https://ollama.ai/install.sh | sh
    ollama serve
-   ollama pull llama3.1
+
+   # Main MTI LLM summarizer currently defaults to qwen3:8b
+   ollama pull qwen3:8b
+
+   # Standalone GO/KEGG summarizer examples use qwen3.5:9b
+   ollama pull qwen3.5:9b
    ```
 
 ### Basic Usage
@@ -65,6 +83,126 @@ python main_pipeline.py \
     --mirwalk hsa_miRWalk_3UTR.txt \
     --mirtarbase miRTarBase_MTI_fixed.csv
 ```
+
+---
+
+## Standalone Functional Interpretation Utilities
+
+In addition to the main MTI pipeline, this repository includes two standalone workflows that can be run independently.
+
+### 1. PubMed Functional Keyword Extractor
+
+The `extractor/` folder contains a PubMed keyword analyzer. It searches PubMed, caches abstracts, extracts functional keywords, and exports CSV files and figures.
+
+```bash
+cd extractor
+
+# Full workflow: fetch PubMed records, extract keywords, export CSV/figures
+python main.py
+
+# Reuse the existing cache and only rerun extraction/analysis
+python main.py --skip-fetch
+
+# Test with fewer records
+python main.py --max 2000
+```
+
+Important configuration lives in `extractor/config.py`:
+
+| Setting | Purpose |
+|---------|---------|
+| `SEARCH_QUERY` | PubMed query and date/language filters |
+| `MAX_RECORDS` | Maximum PubMed records to fetch |
+| `EXTRACTION_METHOD` | `author_kw`, `mesh`, `tfidf`, `yake`, or `combined` |
+| `MIN_FREQ` | Minimum frequency filter for extracted terms |
+| `TOP_K_DISPLAY` | Number of top terms exported |
+
+Key extractor outputs:
+
+```text
+extractor/output/
+├── keywords_author_kw.csv
+├── keywords_mesh.csv
+├── keywords_tfidf.csv
+├── keywords_yake.csv
+├── keywords_borda_merged.csv
+└── keywords_comparison.csv
+```
+
+`keywords_comparison.csv` is the recommended background keyword file for downstream GO/KEGG LLM summarization because it includes the fused Borda score plus counts from all extraction methods:
+
+```text
+keyword,borda_score,author_kw,mesh,tfidf,yake
+```
+
+Note: the current extractor loads the full cache when analysis runs, so if `data/abstracts_cache.jsonl` contains records from older searches, the exported keyword CSVs may reflect the whole cache rather than only the current `SEARCH_QUERY`. Use a clean cache when strict query reproducibility is required.
+
+### 2. GO/KEGG Term Summarization with Ollama
+
+Use `summarize_gokegg_with_ollama.py` to summarize GO/KEGG enrichment CSV files with a local Ollama model. The script is independent from `main_pipeline.py`.
+
+Expected result folder structure:
+
+```text
+results7/
+├── gokegg/
+│   ├── Gene_GO_Biological_Process_2021_enrichment.csv
+│   ├── Gene_KEGG_2019_Human_enrichment.csv
+│   └── Gene_KEGG_2021_Human_GSEA.csv
+└── summarized_keywords/
+    ├── *_summary.txt
+    ├── *_summary.csv
+    └── all_gokegg_summaries.csv
+```
+
+If `gokegg/` is missing or empty, the script automatically copies matching root-level GO/KEGG CSV files from the selected results folder into `gokegg/`. Original files are not moved or deleted.
+
+Recommended command:
+
+```bash
+python summarize_gokegg_with_ollama.py \
+    --results-dir results7 \
+    --extractor-csv extractor/output/keywords_comparison.csv \
+    --model qwen3.5:9b
+```
+
+Dry-run without calling Ollama:
+
+```bash
+python summarize_gokegg_with_ollama.py \
+    --results-dir results7 \
+    --extractor-csv extractor/output/keywords_comparison.csv \
+    --model qwen3.5:9b \
+    --dry-run
+```
+
+The fixed LLM question is:
+
+```text
+Below are mutiple kegg terms, please summarize three most important biologocial function terms. Make sure to choose the functional terms from the list i provided
+```
+
+The script enforces this constraint by validating the LLM output against the terms in the input CSV. Each selected term must come from the provided GO/KEGG term list.
+
+Key options:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--results-dir` | `results7` | Folder containing GO/KEGG results |
+| `--input-subdir` | `gokegg` | Subfolder containing GO/KEGG CSV files |
+| `--output-subdir` | `summarized_keywords` | Subfolder where summaries are saved |
+| `--extractor-csv` | `extractor/output/keywords_comparison.csv` | Background keyword context from the PubMed extractor |
+| `--model` | auto-selected, prefers `qwen3.5:9b` | Ollama model |
+| `--max-terms` | `50` | Number of top GO/KEGG terms sent to the LLM per CSV |
+| `--dry-run` | off | Parse files and show planned work without calling Ollama |
+
+Summary output columns:
+
+```text
+source_file,selected_term_1,selected_term_2,selected_term_3,summary,reason,validation_status,model,term_count,raw_response
+```
+
+`validation_status = ok` means all three selected terms were matched back to the original CSV term list.
 
 ---
 
@@ -88,19 +226,25 @@ python main_pipeline.py \
 
 ### Flexible Step Control
 
-The enhanced pipeline allows you to skip any combination of steps:
+The enhanced pipeline exposes skip flags for optional steps. In the current implementation, LLM analysis still depends on literature files and BERT validation output from the same run.
 
 ```bash
-# Skip literature mining and BERT, proceed directly to LLM analysis
+# Skip literature mining, BERT, and LLM; keep MTI selection and optional network/report generation
 python main_pipeline.py \
     --mode combined \
     --genes gene_list.txt \
     --mirnas mirna_list.txt \
+    --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
+    --mirdb miRDB_v6.0_prediction_result_fixed.txt \
+    --mirwalk hsa_miRWalk_3UTR.txt \
+    --mirtarbase miRTarBase_MTI_fixed.csv \
     --skip-literature \
     --skip-bert \
-    --analysis-mode both \
+    --skip-llm \
     --generate-network
 ```
+
+Current code note: the main LLM step expects `bert_validation/mti_validation_results.csv` and files in `pubmed_articles/` inside the current run directory. For LLM analysis, run literature mining and BERT first. If you only need GO/KEGG term summarization, use the standalone `summarize_gokegg_with_ollama.py` utility.
 
 ### Network Generation with Auto-Fallback
 
@@ -112,6 +256,10 @@ python main_pipeline.py \
     --mode combined \
     --genes gene_list.txt \
     --mirnas mirna_list.txt \
+    --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
+    --mirdb miRDB_v6.0_prediction_result_fixed.txt \
+    --mirwalk hsa_miRWalk_3UTR.txt \
+    --mirtarbase miRTarBase_MTI_fixed.csv \
     --generate-network \
     --network-score-threshold 60
     # DESeq2 files will be auto-generated if not provided
@@ -134,7 +282,9 @@ mitagent/
 ├── refseq_cache.py          # RefSeq identifier management
 ├── mti_llm_summarize.py     # LLM-based analysis (optional)
 ├── mti_cytoscape_network.py # Network generation (optional)
-└── rnaseq_analyzer.py       # RNA-seq differential expression
+├── rnaseq_analyzer.py       # RNA-seq differential expression and GO/KEGG enrichment
+├── summarize_gokegg_with_ollama.py # Standalone GO/KEGG term summarization with Ollama
+└── extractor/               # Standalone PubMed functional keyword extractor
 ```
 
 ### Data Flow
@@ -161,7 +311,7 @@ Config.py    ResultsIntegrator  TextProcessor  Enhanced Logging  Dual Analysis  
 
 | Parameter | Enhancement | Default | New Behavior |
 |-----------|-------------|---------|--------------|
-| `--skip-*` | Can skip any combination | - | Pipeline continues gracefully |
+| `--skip-*` | Skip optional steps | - | LLM requires literature + BERT outputs in the current run |
 | `--generate-network` | Auto-generates DESeq2 files | `False` | Creates defaults when files missing |
 | `--output` | Enhanced directory structure | `pipeline_results` | Improved organization |
 
@@ -217,21 +367,39 @@ pipeline_results/run_YYYYMMDD_HHMMSS/
 │   └── mti_selection_results_combined.xlsx # Can be reused with --existing-step1
 ├── pubmed_articles/                       # 🆕 Enhanced validation
 │   ├── [literature files]
-│   └── download_validation.json          # 🆕 File validation results  
+│   └── mining_summary.csv                # Literature mining summary
 ├── bert_validation/
 │   ├── mti_validation_results.csv
 │   ├── integrated_validation_results.csv  # 🆕 Enhanced integration
 │   └── batch_input.csv                    # 🆕 Batch processing data
 ├── llm_summaries/                         # 🆕 Dual-mode analysis
-│   ├── standard_summaries/               # Standard relationship analysis
+│   ├── *_summary_YYYYMMDD_HHMMSS.json
+│   ├── all_mti_summaries_YYYYMMDD_HHMMSS.json
+│   ├── comprehensive_mti_report_YYYYMMDD_HHMMSS.txt
 │   └── functional_analysis/              # Pathway and systems analysis
 ├── cytoscape_network/                     # 🆕 Enhanced with auto-fallback
-│   ├── network.sif
-│   ├── node_attributes.txt
-│   ├── edge_attributes.txt
-│   └── network_statistics.json          # 🆕 Detailed network stats
+│   └── cytoscape_YYYYMMDD_HHMMSS/
+│       ├── nodes.csv
+│       ├── edges.csv
+│       ├── network.sif
+│       ├── network_enhanced.graphml
+│       ├── cytoscape_style_enhanced.xml
+│       ├── network_summary.json
+│       └── COMPREHENSIVE_USAGE_GUIDE.txt
 ├── default_mirna_deseq.csv              # 🆕 Auto-generated when needed
 └── default_gene_deseq.csv               # 🆕 Auto-generated when needed
+```
+
+Standalone GO/KEGG summary output:
+
+```text
+results7/
+├── gokegg/
+│   └── [GO/KEGG enrichment CSV files]
+└── summarized_keywords/
+    ├── [source_name]_summary.txt
+    ├── [source_name]_summary.csv
+    └── all_gokegg_summaries.csv
 ```
 
 ---
@@ -285,17 +453,20 @@ python main_pipeline.py \
     --generate-network
 ```
 
-### Example 3: LLM-Only Analysis Pipeline
+### Example 3: Fast Network/Report from Existing MTI Selection
 
 ```bash
-# For when you have literature but want to focus on LLM analysis
+# Reuse existing Step 1 MTIs, skip literature/BERT/LLM, and generate a network with default expression values
 python main_pipeline.py \
     --mode combined \
     --existing-step1 previous_mti_results.xlsx \
+    --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
+    --mirdb miRDB_v6.0_prediction_result_fixed.txt \
+    --mirwalk hsa_miRWalk_3UTR.txt \
+    --mirtarbase miRTarBase_MTI_fixed.csv \
     --skip-literature \
     --skip-bert \
-    --analysis-mode both \
-    --functions "proliferation,apoptosis,invasion,metastasis" \
+    --skip-llm \
     --generate-network
 ```
 
@@ -319,15 +490,17 @@ config.DEFAULT_FUNCTIONS  # ['cell proliferation', 'apoptosis', ...]
 config.create_output_structure(results_dir)
 ```
 
-### Environment Variables
+### Runtime Configuration Notes
 
-Set these environment variables for enhanced functionality:
+Most runtime defaults are currently defined in `config.py` and module constructors rather than environment variables.
 
-```bash
-export OLLAMA_HOST=http://localhost:11434  # Custom Ollama endpoint
-export MAX_BERT_BATCH_SIZE=50             # Batch processing control  
-export LOG_LEVEL=INFO                     # Logging verbosity
-```
+| Setting | Current Code Location |
+|---------|-----------------------|
+| Main pipeline Ollama URL check | `utils.check_ollama_connection(base_url="http://localhost:11434")` |
+| Main MTI LLM model | `mti_llm_summarize.MTILLMSummarizer(model_name="qwen3:8b")` |
+| Standalone GO/KEGG Ollama URL | `summarize_gokegg_with_ollama.py --ollama-url` |
+| Standalone GO/KEGG model | `summarize_gokegg_with_ollama.py --model qwen3.5:9b` |
+| Default biological functions | `PipelineConfig.DEFAULT_FUNCTIONS` |
 
 ---
 
@@ -356,9 +529,11 @@ python main_pipeline.py \
 |----------|----------|---------|
 | Step 1 completed, others failed | Use `--existing-step1` | `--existing-step1 results.xlsx` |
 | Literature mining timeout | Reduce articles or skip | `--max-articles 25 --skip-literature` |
-| BERT validation memory error | Skip BERT, use LLM only | `--skip-bert --analysis-mode both` |
+| BERT validation memory error | Skip BERT and LLM, or reduce the BERT batch externally | `--skip-bert --skip-llm` |
 | Network generation failure | Check score threshold | `--network-score-threshold 40` |
-| Ollama connection issues | Check service status | `ollama serve && ollama pull llama3.1` |
+| Main pipeline Ollama connection issues | Check service and install the current default model | `ollama serve && ollama pull qwen3:8b` |
+| GO/KEGG summarizer Ollama connection issues | Check service and install the selected model | `ollama serve && ollama pull qwen3.5:9b` |
+| Empty Qwen/Ollama response | Use the GO/KEGG summarizer or pass `think: false` in custom Ollama API calls | `python summarize_gokegg_with_ollama.py --dry-run` |
 
 ---
 
@@ -504,7 +679,14 @@ The enhanced pipeline maintains full backward compatibility:
 python main_pipeline.py -m combined -g genes.txt -r mirnas.txt -t target.txt -d mirdb.txt -w mirwalk.txt
 
 # Enhanced features are optional
-python main_pipeline.py --mode combined --genes genes.txt --mirnas mirnas.txt --analysis-mode both
+python main_pipeline.py \
+    --mode combined \
+    --genes genes.txt \
+    --mirnas mirnas.txt \
+    --targetscan target.txt \
+    --mirdb mirdb.txt \
+    --mirwalk mirwalk.txt \
+    --analysis-mode both
 ```
 
 ---
