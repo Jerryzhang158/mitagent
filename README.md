@@ -1,733 +1,194 @@
-# MiTAgent: Enhanced Modular miRNA Research Pipeline
+# MiTAgent
 
-[![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-active-success.svg)]()
+MiTAgent is research software for prioritizing microRNA–target interactions (MTIs) in a defined biological context. It connects candidate interactions from prediction resources or user-specified pairs with PubMed-derived abstract evidence, embedding-based evidence scores, optional language-model interpretation, and network exports.
 
-> A comprehensive computational pipeline for systematic analysis of microRNA regulatory networks with enhanced modular architecture
+The intended workflow starts with a biological question and an expression-derived candidate set. Literature scores help identify interactions for follow-up experiments; they are evidence-ranking measures, not probabilities of binding or experimental confirmation.
 
-## Overview
+## Workflow
 
-MiTAgent provides an end-to-end solution for miRNA-mRNA interaction analysis, featuring a completely redesigned modular architecture that integrates multiple prediction databases, machine learning validation, and advanced functional interpretation. The system supports flexible analytical workflows with improved error handling, centralized configuration, and seamless step continuity.
+1. Analyze expression matrices and relevant GO, KEGG, or GSEA results to define the study context.
+2. Prepare gene and miRNA lists, or an explicit pair table.
+3. Generate candidates using database-guided or direct input modes.
+4. Retrieve abstracts and retain their identifiers and matching provenance.
+5. Score the literature evidence against the supplied biological functions.
+6. Optionally interpret the results with Ollama and export a Cytoscape-compatible network.
 
-## Key Features
+`rnaseq_analyzer.py` and `interactive_launcher.py` support upstream expression analysis. `main_pipeline.py` begins at the prepared-list or pair-table stage. Candidate selection from enrichment results is study-specific and must be documented by the investigator. The main CLI does not perform FASTQ processing or automatically select candidates from enrichment results.
 
-| Feature | Description |
-|---------|-------------|
-| **Modular Architecture** | Component-based design with centralized configuration management |
-| **Multi-Database Integration** | TargetScan, miRDB, miRWalk, miRTarBase support |
-| **Machine Learning Validation** | BERT-based interaction validation with enhanced processing |
-| **Literature Mining** | Automated PubMed literature retrieval with validation |
-| **Advanced LLM Analysis** | Dual-mode analysis (Standard + Functional) with Ollama integration |
-| **PubMed Functional Keyword Extraction** | Standalone `extractor/` workflow for PubMed keyword ranking across author keywords, MeSH, TF-IDF, YAKE, and Borda fusion |
-| **GO/KEGG LLM Summarization** | Standalone Ollama utility that reads GO/KEGG CSV files, chooses exactly three functional terms from the provided list, and saves validated summaries |
-| **Network Visualization** | Cytoscape-compatible network generation with auto-fallback |
-| **Flexible Execution** | Resume from any step, skip optional components |
-| **Enhanced Error Handling** | Robust error management with detailed logging |
+## Candidate modes
 
-## Quick Start
+| Mode | Input | Candidate construction |
+|---|---|---|
+| `gene` | Gene list | Search for candidate regulatory miRNAs across TargetScan, miRDB, and miRWalk; integrate miRTarBase evidence. |
+| `mirna` | miRNA list; optional gene list | Search for target genes and optionally restrict them to the supplied genes. |
+| `combined` | Both lists | Merge and deduplicate the gene-led and miRNA-led searches. This is their union, not a strict intersection. |
+| `direct` | Pair table, or both lists | Evaluate explicit pairs or the complete Cartesian product, without prediction-database filtering. |
 
-### Prerequisites
+`direct` forces the local SQLite abstract backend and skips LLM interpretation. Network export is optional. The `--min-databases` setting governs the gene-led prediction intersections; the miRNA-led path can include single-resource pairs. Strong miRTarBase-supported pairs can enter independently of prediction-resource counts.
 
-- Python 3.8+
-- 8GB+ RAM (16GB recommended)
-- 2GB disk space
-- Internet connection
+## Installation
 
-### Installation
-
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/Jerryzhang158/mitagent.git
-   cd mitagent
-   ```
-
-2. **Create Python environment**
-   ```bash
-   conda env create -f environment.yml
-   conda activate mitagent
-   ```
-
-   If Conda cannot solve the full environment on your machine, create a lighter environment and install the core packages manually:
-
-   ```bash
-   conda create -n mitagent python=3.11
-   conda activate mitagent
-   pip install pandas numpy requests biopython openpyxl scikit-learn matplotlib seaborn
-
-   # Optional modules used by LLM / enrichment / network workflows
-   pip install langchain langchain-community gseapy networkx
-   ```
-
-3. **Install Ollama** (for LLM analysis)
-   ```bash
-   curl -fsSL https://ollama.ai/install.sh | sh
-   ollama serve
-
-   # Main MTI LLM summarizer currently defaults to qwen3:8b
-   ollama pull qwen3:8b
-
-   # Standalone GO/KEGG summarizer examples use qwen3.5:9b
-   ollama pull qwen3.5:9b
-   ```
-
-### Basic Usage
+Use Python 3.11. From a terminal:
 
 ```bash
-python main_pipeline.py \
-    --mode combined \
-    --genes gene_list.txt \
-    --mirnas mirna_list.txt \
-    --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
-    --mirdb miRDB_v6.0_prediction_result_fixed.txt \
-    --mirwalk hsa_miRWalk_3UTR.txt \
-    --mirtarbase miRTarBase_MTI_fixed.csv
+git clone https://github.com/Jerryzhang158/mitagent.git
+cd mitagent
+python -m venv .venv
 ```
 
----
-
-## Standalone Functional Interpretation Utilities
-
-In addition to the main MTI pipeline, this repository includes two standalone workflows that can be run independently.
-
-### 1. PubMed Functional Keyword Extractor
-
-The `extractor/` folder contains a PubMed keyword analyzer. It searches PubMed, caches abstracts, extracts functional keywords, and exports CSV files and figures.
+Activate with `.venv\Scripts\Activate.ps1` in PowerShell, or `source .venv/bin/activate` on Linux/macOS. Then:
 
 ```bash
-cd extractor
-
-# Full workflow: fetch PubMed records, extract keywords, export CSV/figures
-python main.py
-
-# Reuse the existing cache and only rerun extraction/analysis
-python main.py --skip-fetch
-
-# Test with fewer records
-python main.py --max 2000
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip check
+python main_pipeline.py --help
 ```
 
-Important configuration lives in `extractor/config.py`:
+Alternatively, run `conda env create -f environment.yml` followed by `conda activate mitagent` from the repository root. The Python environment does not install external datasets, embedding weights, R, or Ollama. GPU users should install a compatible [PyTorch build](https://pytorch.org/get-started/locally/) for their hardware before the requirements file.
 
-| Setting | Purpose |
-|---------|---------|
-| `SEARCH_QUERY` | PubMed query and date/language filters |
-| `MAX_RECORDS` | Maximum PubMed records to fetch |
-| `EXTRACTION_METHOD` | `author_kw`, `mesh`, `tfidf`, `yake`, or `combined` |
-| `MIN_FREQ` | Minimum frequency filter for extracted terms |
-| `TOP_K_DISPLAY` | Number of top terms exported |
-
-Key extractor outputs:
-
-```text
-extractor/output/
-├── keywords_author_kw.csv
-├── keywords_mesh.csv
-├── keywords_tfidf.csv
-├── keywords_yake.csv
-├── keywords_borda_merged.csv
-└── keywords_comparison.csv
-```
-
-`keywords_comparison.csv` is the recommended background keyword file for downstream GO/KEGG LLM summarization because it includes the fused Borda score plus counts from all extraction methods:
-
-```text
-keyword,borda_score,author_kw,mesh,tfidf,yake
-```
-
-Note: the current extractor loads the full cache when analysis runs, so if `data/abstracts_cache.jsonl` contains records from older searches, the exported keyword CSVs may reflect the whole cache rather than only the current `SEARCH_QUERY`. Use a clean cache when strict query reproducibility is required.
-
-### 2. GO/KEGG Term Summarization with Ollama
-
-Use `summarize_gokegg_with_ollama.py` to summarize GO/KEGG enrichment CSV files with a local Ollama model. The script is independent from `main_pipeline.py`.
-
-Expected result folder structure:
-
-```text
-results7/
-├── gokegg/
-│   ├── Gene_GO_Biological_Process_2021_enrichment.csv
-│   ├── Gene_KEGG_2019_Human_enrichment.csv
-│   └── Gene_KEGG_2021_Human_GSEA.csv
-└── summarized_keywords/
-    ├── *_summary.txt
-    ├── *_summary.csv
-    └── all_gokegg_summaries.csv
-```
-
-If `gokegg/` is missing or empty, the script automatically copies matching root-level GO/KEGG CSV files from the selected results folder into `gokegg/`. Original files are not moved or deleted.
-
-Recommended command:
+For upstream expression analysis, LLM interpretation, and keyword extraction:
 
 ```bash
-python summarize_gokegg_with_ollama.py \
-    --results-dir results7 \
-    --extractor-csv extractor/output/keywords_comparison.csv \
-    --model qwen3.5:9b
+python -m pip install -r requirements-optional.txt
 ```
 
-Dry-run without calling Ollama:
+For DESeq2, install R and use [Bioconductor](https://bioconductor.org/install/) from an R session:
+
+```r
+install.packages(c("BiocManager", "jsonlite", "dplyr", "ggplot2"))
+BiocManager::install("DESeq2")
+```
+
+Make `Rscript` available on PATH, or set `RNA_ANALYZER_RSCRIPT` to its executable. Raw counts are required for DESeq2; TPM/FPKM are not interchangeable inputs. The expression module has a Python statistical fallback, which is not DESeq2 and must be identified separately in study methods. Inspect the generated configuration with `python rnaseq_analyzer.py --create-config` and the available options with `--help` before using study data.
+
+## Data and model preparation
+
+### Local abstract corpus
+
+The retrieval backend uses SQLite FTS5. Build a miRNA-focused corpus using [pubmed_year_export](pubmed_year_export/README.md), or point to a compatible index through `MITAGENT_PUBMED_LOCAL_DB`.
+
+The corpus specification `pubmed-mirna-baseline-2026-v1` filters the 2026 PubMed Annual Baseline for records with Abstract or OtherAbstract, publication dates intersecting 2020–2026, and miRNA terms in titles, abstracts, MeSH, or keywords. It is a topical abstract collection, not all PubMed or full-text articles. Annual Baseline and subsequent Daily Updates are distinct snapshots; the builder does not automatically incorporate Daily Updates.
+
+Retrieval first matches the mature miRNA name and then supplements with family matches up to `--max-articles`. JSONL records retain the match type, PMID, DOI, year, and abstract fields. The default CLI uses `exact_then_family`; strict mature-arm comparisons require an explicitly controlled `exact_only` backend workflow. Do not pool these retrieval policies in a benchmark.
+
+Downloaded corpora and indexes are excluded from Git. A full baseline build downloads substantial source data; use a bounded pilot before a full build and retain the source checksums and generated manifest.
+
+### Prediction resources
+
+The `gene`, `mirna`, and `combined` modes require prepared TargetScan, miRDB, and miRWalk tables. miRTarBase is optional. Obtain data from the resource providers and record their releases, species, filtering rules, and checksums. Prepare columns used by the loaders:
+
+| Resource | Required identifying fields |
+|---|---|
+| TargetScan | `miRNA`, `Gene Symbol` |
+| miRDB | `miRNA`, `RefSeq`, `Score` |
+| miRWalk | `miRNA`, `Genesymbol`, `binding_probability` |
+| miRTarBase | `miRNA`, `Target Gene`; evidence metadata includes `Support Type`, `Experiments`, `References (PMID)` |
+
+Raw provider exports may need conversion to these schemas. RefSeq and network identifier mapping can contact MyGene. Database-guided execution therefore may require internet access even when abstract retrieval is local.
+
+### Embeddings and LLMs
+
+The default embedding model is [`NeuML/pubmedbert-base-embeddings`](https://huggingface.co/NeuML/pubmedbert-base-embeddings). It is selected with `--bert-model`, which also accepts a local SentenceTransformer model directory. The first use of a model ID may download weights. Pin and archive the exact model revision for a study.
+
+The manuscript analyses report GeneralBERT-Mini (`sentence-transformers/all-MiniLM-L6-v2`). To select that model explicitly, pass `--bert-model sentence-transformers/all-MiniLM-L6-v2`. Selecting the name alone does not reconstruct the historical corpus, inputs, thresholds, or software environment.
+
+LLM interpretation uses a local [Ollama installation](https://ollama.com/download), with `qwen3.5:9b` as the default (`--llm-model`). Run `ollama pull qwen3.5:9b` and ensure the service is reachable at `localhost:11434`. It is unnecessary for direct mode. LLM summaries are hypotheses and interpretations that require verification against the cited evidence.
+
+## Synthetic example
+
+The files in `examples/` contain a fictional pair and synthetic evidence text. They demonstrate software execution and do not represent a biological result or PubMed citation.
+
+Create the fixture once:
 
 ```bash
-python summarize_gokegg_with_ollama.py \
-    --results-dir results7 \
-    --extractor-csv extractor/output/keywords_comparison.csv \
-    --model qwen3.5:9b \
-    --dry-run
+python examples/create_demo_corpus.py --output outputs/demo/pubmed.sqlite
 ```
 
-The fixed LLM question is:
+PowerShell:
 
-```text
-Below are mutiple kegg terms, please summarize three most important biologocial function terms. Make sure to choose the functional terms from the list i provided
+```powershell
+$env:MITAGENT_PUBMED_LOCAL_DB = (Resolve-Path "outputs/demo/pubmed.sqlite").Path
+python main_pipeline.py --mode direct --pairs examples/pairs.csv --functions "oxidative stress" --output outputs/pairs
 ```
 
-The script enforces this constraint by validating the LLM output against the terms in the input CSV. Each selected term must come from the provided GO/KEGG term list.
-
-Key options:
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--results-dir` | `results7` | Folder containing GO/KEGG results |
-| `--input-subdir` | `gokegg` | Subfolder containing GO/KEGG CSV files |
-| `--output-subdir` | `summarized_keywords` | Subfolder where summaries are saved |
-| `--extractor-csv` | `extractor/output/keywords_comparison.csv` | Background keyword context from the PubMed extractor |
-| `--model` | auto-selected, prefers `qwen3.5:9b` | Ollama model |
-| `--max-terms` | `50` | Number of top GO/KEGG terms sent to the LLM per CSV |
-| `--dry-run` | off | Parse files and show planned work without calling Ollama |
-
-Summary output columns:
-
-```text
-source_file,selected_term_1,selected_term_2,selected_term_3,summary,reason,validation_status,model,term_count,raw_response
-```
-
-`validation_status = ok` means all three selected terms were matched back to the original CSV term list.
-
----
-
-## Enhanced Usage Options
-
-### Resume from Existing Results
-
-One of the major improvements is the ability to resume analysis from existing Step 1 results:
+Bash:
 
 ```bash
-# Continue from previously generated MTI selection
-python main_pipeline.py \
-    --mode combined \
-    --existing-step1 previous_results/mti_selection_results_combined.xlsx \
-    --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
-    --mirdb miRDB_v6.0_prediction_result_fixed.txt \
-    --mirwalk hsa_miRWalk_3UTR.txt \
-    --mirtarbase miRTarBase_MTI_fixed.csv \
-    --analysis-mode both
+export MITAGENT_PUBMED_LOCAL_DB="$PWD/outputs/demo/pubmed.sqlite"
+python main_pipeline.py --mode direct --pairs examples/pairs.csv --functions "oxidative stress" --output outputs/pairs
 ```
 
-### Flexible Step Control
-
-The enhanced pipeline exposes skip flags for optional steps. In the current implementation, LLM analysis still depends on literature files and BERT validation output from the same run.
+To evaluate the two synthetic genes against one miRNA:
 
 ```bash
-# Skip literature mining, BERT, and LLM; keep MTI selection and optional network/report generation
-python main_pipeline.py \
-    --mode combined \
-    --genes gene_list.txt \
-    --mirnas mirna_list.txt \
-    --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
-    --mirdb miRDB_v6.0_prediction_result_fixed.txt \
-    --mirwalk hsa_miRWalk_3UTR.txt \
-    --mirtarbase miRTarBase_MTI_fixed.csv \
-    --skip-literature \
-    --skip-bert \
-    --skip-llm \
-    --generate-network
+python main_pipeline.py --mode direct --genes examples/genes.txt --mirnas examples/mirnas.txt --functions "oxidative stress" --output outputs/cartesian
 ```
 
-Current code note: the main LLM step expects `bert_validation/mti_validation_results.csv` and files in `pubmed_articles/` inside the current run directory. For LLM analysis, run literature mining and BERT first. If you only need GO/KEGG term summarization, use the standalone `summarize_gokegg_with_ollama.py` utility.
+This creates two candidate pairs; only the pair with matching fixture evidence proceeds to scoring. For a retrieval-only check without embedding weights, append `--skip-bert`. For candidate construction alone, append `--skip-literature --skip-bert`. Skipped scoring assigns no numerical evidence scores.
 
-### Network Generation with Auto-Fallback
+## Study execution
 
-The pipeline now automatically generates default expression files if DESeq2 results aren't provided:
+Direct pair tables accept CSV, TSV, and XLSX with `Gene` and `miRNA` columns. Common aliases such as `gene_name`, `Target_Gene`, `miRNA_name`, and `miRNA_norm` are accepted. List files contain one identifier per line.
+
+The compatibility output format uses family-level filenames and scoring keys. A batch containing distinct mature miRNAs that map to the same gene/family key is rejected before retrieval to prevent evidence overwriting. Run those pairs separately and retain their mature identities when combining results. This safeguard does not change the retrieval or scoring rules.
+
+Database-guided example (replace paths with prepared study inputs):
 
 ```bash
-# Network generation with auto-generated expression files
-python main_pipeline.py \
-    --mode combined \
-    --genes gene_list.txt \
-    --mirnas mirna_list.txt \
-    --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
-    --mirdb miRDB_v6.0_prediction_result_fixed.txt \
-    --mirwalk hsa_miRWalk_3UTR.txt \
-    --mirtarbase miRTarBase_MTI_fixed.csv \
-    --generate-network \
-    --network-score-threshold 60
-    # DESeq2 files will be auto-generated if not provided
+python main_pipeline.py --mode combined --genes data/genes.txt --mirnas data/mirnas.txt --targetscan data/targetscan.tsv --mirdb data/mirdb.tsv --mirwalk data/mirwalk.tsv --mirtarbase data/mirtarbase.csv --functions "oxidative stress,ferroptosis" --skip-llm --output outputs/study
 ```
 
----
+Omit `--skip-llm` to enable Ollama interpretation in a database-guided run. `--analysis-mode` accepts `standard`, `functional`, or `both`. `--existing-step1` reuses a candidate table; it does not load previous literature or BERT outputs and is not a general checkpoint-resume mechanism.
 
-## Architecture Overview
+For expression-annotated network export, add `--generate-network --mirna-deseq data/mirna_deseq.csv --gene-deseq data/gene_deseq.csv --network-score-threshold 60`. Both expression files must be supplied together. Gene tables use `mRNA`; miRNA tables use `miRNA`; DESeq2-style numeric fields include `baseMean`, `log2FoldChange`, `lfcSE`, `stat`, `pvalue`, and `padj`. Inspect identifier mapping in the network log.
 
-### Core Components
+For topology-only export without measured expression, explicitly use `--generate-network --allow-placeholder-expression`. This creates labeled placeholder expression values (zero log2 fold change and p/padj of one), not inferred or measured differential expression. Do not use those values as experimental evidence. Network export cannot be combined with `--skip-bert`.
 
-```
-mitagent/
-├── main_pipeline.py          # Main controller with enhanced modularity
-├── config.py                 # Centralized configuration management
-├── utils.py                  # Utilities (Logger, FileUtils, ResultsIntegrator)
-├── mti_selection.py          # MTI selection logic
-├── literature_mining.py      # PubMed literature retrieval
-├── mirna_matcher.py          # miRNA name matching and normalization
-├── refseq_cache.py          # RefSeq identifier management
-├── mti_llm_summarize.py     # LLM-based analysis (optional)
-├── mti_cytoscape_network.py # Network generation (optional)
-├── rnaseq_analyzer.py       # RNA-seq differential expression and GO/KEGG enrichment
-├── summarize_gokegg_with_ollama.py # Standalone GO/KEGG term summarization with Ollama
-└── extractor/               # Standalone PubMed functional keyword extractor
-```
+### Reproducibility record
 
-### Data Flow
+For each analysis retain the repository commit, full command, input checksums, resource releases, corpus manifest and retrieval policy, model revision, biological functions, score thresholds, and Python/R package versions. Runs write `run_parameters.json` with CLI arguments and selected installed package versions; external resource provenance must also be retained.
 
-```
-Input Files → MTI Selection → Literature Mining → BERT Validation → LLM Analysis → Network Generation
-     ↓              ↓              ↓              ↓              ↓              ↓
-Config.py    ResultsIntegrator  TextProcessor  Enhanced Logging  Dual Analysis  Auto-Fallback
-```
+The default BERT validity threshold is 30 and the default network inclusion threshold is 50. Study-specific thresholds, such as 60, must be supplied explicitly. Scores are not calibrated probabilities. Changing the embedding model, sentence segmentation resources, retrieval coverage, or function terms can change ranking. Archive NLTK resources as well as model weights; if NLTK sentence resources are unavailable, the scorer uses its regex sentence splitter.
 
----
+The repository supplies source and a synthetic execution example. It does not bundle private expression data, manuscript drafts, full prediction databases, model weights, or a complete archive of the paper's experimental runs. The example and unit tests establish software behavior, not full manuscript-result reproduction.
 
-## Command Line Parameters
+## Outputs
 
-### New Parameters
+Each run is written under `<output>/run_<timestamp>/`:
 
-| Parameter | Description | Example |
-|-----------|-------------|---------|
-| `--existing-step1` | Resume from existing Step 1 results | `previous_results.xlsx` |
-| `--analysis-mode` | LLM analysis type | `standard`, `functional`, `both` |
-| `--network-score-threshold` | Network inclusion threshold | `60` |
+| Path | Contents |
+|---|---|
+| `mirna_selection/` | Candidate table, including pair origin and database annotations |
+| `pubmed_articles/mining_summary.csv` | Retrieval coverage per pair |
+| `pubmed_articles/*.txt`, `*.jsonl` | Abstract text and record provenance |
+| `bert_validation/mti_validation_results.csv` | Overall, relation, function, and evidence component scores |
+| `llm_summaries/` | Optional interpretation outputs |
+| `cytoscape_network/` | Optional nodes, edges, GraphML/SIF, and style files |
+| `run_parameters.json` | CLI parameters and package versions |
+| `pipeline_log.txt`, `pipeline_report.txt` | Execution details, stage status, and existing output files |
 
-### Enhanced Parameters
+Only literature-covered pairs are scored. A requested stage that fails returns a nonzero exit status and is recorded as failed; insufficient evidence for a requested scoring stage is not reported as successful scoring. Expression support, database support, literature evidence, and direct binding experiments are different evidence levels.
 
-| Parameter | Enhancement | Default | New Behavior |
-|-----------|-------------|---------|--------------|
-| `--skip-*` | Skip optional steps | - | LLM requires literature + BERT outputs in the current run |
-| `--generate-network` | Auto-generates DESeq2 files | `False` | Creates defaults when files missing |
-| `--output` | Enhanced directory structure | `pipeline_results` | Improved organization |
+## Additional research utilities
 
----
+- [Functional keyword extraction](extractor/README.md): author keywords, MeSH, TF-IDF, YAKE, and Borda aggregation from PubMed abstracts.
+- `summarize_gokegg_with_ollama.py`: selects three functional terms from supplied enrichment tables and validates that they occur in the input list. It is independent of the MTI CLI.
+- `rnaseq_analyzer.py`: expression-matrix analysis and enrichment; `interactive_launcher.py` provides an interactive entry point.
 
-## Pipeline Steps (Enhanced)
+## Tests
 
-### Step 1: Enhanced MTI Selection
-**New Features**:
-- Load existing results with `--existing-step1`
-- Improved database integration through `MTISelector` class
-- Better error handling and validation
-- Enhanced logging with step progress
-
-### Step 2: Robust Literature Mining  
-**New Features**:
-- File validation after download
-- Better error recovery
-- Enhanced article processing through `LiteratureMiner` class
-- Detailed download statistics
-
-### Step 3: Advanced BERT Validation
-**New Features**:
-- Improved miRNA name handling via `TextProcessor`
-- Better batch processing
-- Enhanced result integration
-- Graceful fallback when articles unavailable
-
-### Step 4: Dual-Mode LLM Analysis
-**New Features**:
-- **Standard Analysis**: Relationship summarization and evidence assessment
-- **Functional Analysis**: Pathway enrichment and systems-level interpretation  
-- **Both Modes**: Comprehensive analysis with integrated results
-- Enhanced Ollama connection management
-- Improved text processing and result integration
-
-### Step 5: Smart Network Generation
-**New Features**:
-- Auto-generation of default DESeq2 files
-- Enhanced network statistics
-- Improved error handling
-- Better integration with expression data
-
----
-
-## Output Structure (Enhanced)
-
-```
-pipeline_results/run_YYYYMMDD_HHMMSS/
-├── pipeline_report.txt                    # 🆕 Enhanced with architectural notes
-├── pipeline_log.txt                       # 🆕 Comprehensive logging
-├── mirna_selection/
-│   └── mti_selection_results_combined.xlsx # Can be reused with --existing-step1
-├── pubmed_articles/                       # 🆕 Enhanced validation
-│   ├── [literature files]
-│   └── mining_summary.csv                # Literature mining summary
-├── bert_validation/
-│   ├── mti_validation_results.csv
-│   ├── integrated_validation_results.csv  # 🆕 Enhanced integration
-│   └── batch_input.csv                    # 🆕 Batch processing data
-├── llm_summaries/                         # 🆕 Dual-mode analysis
-│   ├── *_summary_YYYYMMDD_HHMMSS.json
-│   ├── all_mti_summaries_YYYYMMDD_HHMMSS.json
-│   ├── comprehensive_mti_report_YYYYMMDD_HHMMSS.txt
-│   └── functional_analysis/              # Pathway and systems analysis
-├── cytoscape_network/                     # 🆕 Enhanced with auto-fallback
-│   └── cytoscape_YYYYMMDD_HHMMSS/
-│       ├── nodes.csv
-│       ├── edges.csv
-│       ├── network.sif
-│       ├── network_enhanced.graphml
-│       ├── cytoscape_style_enhanced.xml
-│       ├── network_summary.json
-│       └── COMPREHENSIVE_USAGE_GUIDE.txt
-├── default_mirna_deseq.csv              # 🆕 Auto-generated when needed
-└── default_gene_deseq.csv               # 🆕 Auto-generated when needed
-```
-
-Standalone GO/KEGG summary output:
-
-```text
-results7/
-├── gokegg/
-│   └── [GO/KEGG enrichment CSV files]
-└── summarized_keywords/
-    ├── [source_name]_summary.txt
-    ├── [source_name]_summary.csv
-    └── all_gokegg_summaries.csv
-```
-
----
-
-## Advanced Examples
-
-### Example 1: Complete Enhanced Analysis
+The deterministic suite uses temporary synthetic databases and mocked external services:
 
 ```bash
-python main_pipeline.py \
-    --mode combined \
-    --genes gene_list.txt \
-    --mirnas mirna_list.txt \
-    --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
-    --mirdb miRDB_v6.0_prediction_result_fixed.txt \
-    --mirwalk hsa_miRWalk_3UTR.txt \
-    --mirtarbase miRTarBase_MTI_fixed.csv \
-    --mirna-deseq miRNA.csv \
-    --gene-deseq mRNA.csv \
-    --functions "cell proliferation,apoptosis,migration" \
-    --max-articles 150 \
-    --min-databases 3 \
-    --analysis-mode both \
-    --generate-network \
-    --network-score-threshold 65 \
-    --output results/enhanced_analysis
+python -m pip install -r requirements-core.txt
+python -m unittest -v tests.test_pipeline test_local_pubmed_backend pubmed_year_export.test_parser pubmed_year_export.test_local_index pubmed_year_export.test_baseline_builder
 ```
 
-### Example 2: Resume and Complete Previous Analysis
+CI runs this suite on Windows and Linux with Python 3.11. It does not download embedding weights, execute Ollama, rebuild PubMed, or reproduce biological experiments. Use the synthetic example separately to check embedding inference in the selected environment.
 
-```bash
-# Step 1: Generate initial MTI selection
-python main_pipeline.py \
-    --mode combined \
-    --genes gene_list.txt \
-    --mirnas mirna_list.txt \
-    --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
-    --mirdb miRDB_v6.0_prediction_result_fixed.txt \
-    --mirwalk hsa_miRWalk_3UTR.txt \
-    --skip-literature --skip-bert --skip-llm
+## License and citation
 
-# Step 2: Resume with full analysis
-python main_pipeline.py \
-    --mode combined \
-    --existing-step1 pipeline_results/run_*/mirna_selection/mti_selection_results_combined.xlsx \
-    --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
-    --mirdb miRDB_v6.0_prediction_result_fixed.txt \
-    --mirwalk hsa_miRWalk_3UTR.txt \
-    --mirtarbase miRTarBase_MTI_fixed.csv \
-    --analysis-mode both \
-    --generate-network
-```
+Source code is distributed under the [Apache License 2.0](LICENSE). External datasets, publications, model weights, and services retain their respective terms.
 
-### Example 3: Fast Network/Report from Existing MTI Selection
-
-```bash
-# Reuse existing Step 1 MTIs, skip literature/BERT/LLM, and generate a network with default expression values
-python main_pipeline.py \
-    --mode combined \
-    --existing-step1 previous_mti_results.xlsx \
-    --targetscan Predicted_Targets_Context_Scores.default_predictions.txt \
-    --mirdb miRDB_v6.0_prediction_result_fixed.txt \
-    --mirwalk hsa_miRWalk_3UTR.txt \
-    --mirtarbase miRTarBase_MTI_fixed.csv \
-    --skip-literature \
-    --skip-bert \
-    --skip-llm \
-    --generate-network
-```
-
----
-
-## Configuration Management
-
-### Centralized Configuration
-
-The enhanced pipeline uses a centralized configuration system via `config.py`:
-
-```python
-# Configuration is automatically managed
-from config import PipelineConfig
-config = PipelineConfig()
-
-# Access default functions
-config.DEFAULT_FUNCTIONS  # ['cell proliferation', 'apoptosis', ...]
-
-# Directory structure auto-created
-config.create_output_structure(results_dir)
-```
-
-### Runtime Configuration Notes
-
-Most runtime defaults are currently defined in `config.py` and module constructors rather than environment variables.
-
-| Setting | Current Code Location |
-|---------|-----------------------|
-| Main pipeline Ollama URL check | `utils.check_ollama_connection(base_url="http://localhost:11434")` |
-| Main MTI LLM model | `mti_llm_summarize.MTILLMSummarizer(model_name="qwen3:8b")` |
-| Standalone GO/KEGG Ollama URL | `summarize_gokegg_with_ollama.py --ollama-url` |
-| Standalone GO/KEGG model | `summarize_gokegg_with_ollama.py --model qwen3.5:9b` |
-| Default biological functions | `PipelineConfig.DEFAULT_FUNCTIONS` |
-
----
-
-## Error Handling and Recovery
-
-### Enhanced Error Management
-
-The new architecture provides robust error handling:
-
-```bash
-# Pipeline continues even if individual steps fail
-python main_pipeline.py \
-    --mode combined \
-    --genes gene_list.txt \
-    --mirnas mirna_list.txt \
-    # ... database files ...
-    --analysis-mode both
-    
-# Check pipeline_log.txt for detailed error information
-# Final report includes success/failure status for each step
-```
-
-### Recovery Strategies
-
-| Scenario | Solution | Command |
-|----------|----------|---------|
-| Step 1 completed, others failed | Use `--existing-step1` | `--existing-step1 results.xlsx` |
-| Literature mining timeout | Reduce articles or skip | `--max-articles 25 --skip-literature` |
-| BERT validation memory error | Skip BERT and LLM, or reduce the BERT batch externally | `--skip-bert --skip-llm` |
-| Network generation failure | Check score threshold | `--network-score-threshold 40` |
-| Main pipeline Ollama connection issues | Check service and install the current default model | `ollama serve && ollama pull qwen3:8b` |
-| GO/KEGG summarizer Ollama connection issues | Check service and install the selected model | `ollama serve && ollama pull qwen3.5:9b` |
-| Empty Qwen/Ollama response | Use the GO/KEGG summarizer or pass `think: false` in custom Ollama API calls | `python summarize_gokegg_with_ollama.py --dry-run` |
-
----
-
-## Performance and Optimization
-
-### Resource Management
-
-The enhanced pipeline provides better resource management:
-
-| Component | Memory Usage | Optimization |
-|-----------|--------------|-------------|
-| **MTI Selection** | Low (< 1GB) | Efficient database loading |
-| **Literature Mining** | Medium (2-4GB) | Batched API requests |
-| **BERT Validation** | High (4-8GB) | Configurable batch sizes |
-| **LLM Analysis** | Medium (2-6GB) | Streaming processing |
-| **Network Generation** | Low (< 2GB) | Efficient graph algorithms |
-
-### Recommended Settings
-
-| Dataset Size | Settings | Performance |
-|--------------|----------|-------------|
-| **Small** (<20 MTIs) | `--max-articles 100 --analysis-mode both` | ~30-60 min |
-| **Medium** (20-100 MTIs) | `--max-articles 75 --analysis-mode both` | ~1-3 hours |
-| **Large** (100+ MTIs) | `--max-articles 50 --analysis-mode standard` | ~3-8 hours |
-
----
-
-## Troubleshooting (Updated)
-
-### Component-Specific Issues
-
-#### Module Import Errors
-**Problem**: `ImportError: cannot import name 'MTILLMSummarizer'`
-
-**Solution**:
-```bash
-# Check if all modules are present
-ls -la *.py | grep -E "(config|utils|mti_|mirna_|literature_|refseq_)"
-
-# Missing modules will be reported as warnings but pipeline continues
-```
-
-#### Configuration Issues
-**Problem**: Pipeline configuration errors
-
-**Solution**:
-```bash
-# Check configuration
-python -c "from config import PipelineConfig; print('Config OK')"
-
-# Reset configuration if needed
-rm -f config.pyc __pycache__/config.*
-```
-
-#### Step Continuity Problems
-**Problem**: Cannot resume from existing results
-
-**Solution**:
-```bash
-# Verify file format and location
-python -c "import pandas as pd; df = pd.read_excel('your_results.xlsx'); print(f'Shape: {df.shape}')"
-
-# Use absolute paths
-python main_pipeline.py --existing-step1 /full/path/to/results.xlsx
-```
-
-### Enhanced Logging
-
-Check detailed logs for troubleshooting:
-
-```bash
-# Real-time log monitoring
-tail -f pipeline_results/run_*/pipeline_log.txt
-
-# Search for specific errors
-grep -i "error\|failed\|exception" pipeline_results/run_*/pipeline_log.txt
-
-# Check step completion status
-grep -i "step.*completed\|step.*failed" pipeline_results/run_*/pipeline_log.txt
-```
-
----
-
-## Development and Extension
-
-### Adding New Components
-
-The modular architecture makes it easy to add new components:
-
-```python
-# Create new module: my_analysis.py
-class MyAnalyzer:
-    def __init__(self, logger):
-        self.logger = logger
-    
-    def analyze(self, data):
-        # Your analysis logic
-        pass
-
-# Integrate in main_pipeline.py
-from my_analysis import MyAnalyzer
-
-# Add to pipeline steps
-analyzer = MyAnalyzer(self.logger)
-results = analyzer.analyze(self.validation_results)
-```
-
-### Configuration Extension
-
-Extend the configuration system:
-
-```python
-# In config.py
-class PipelineConfig:
-    def __init__(self):
-        self.MY_NEW_SETTING = "default_value"
-        self.MY_PARAMETERS = {
-            'param1': 10,
-            'param2': 'setting'
-        }
-```
-
----
-
-## Migration from Previous Versions
-
-### Key Changes
-
-| Previous Version | Enhanced Version | Migration |
-|------------------|------------------|-----------|
-| Single file pipeline | Modular architecture | No code changes needed |
-| Basic error handling | Comprehensive error recovery | Better stability |
-| Fixed step execution | Flexible step control | New command options |
-| Manual continuation | Automatic step resumption | `--existing-step1` option |
-| Single LLM mode | Dual analysis modes | `--analysis-mode` parameter |
-
-### Backward Compatibility
-
-The enhanced pipeline maintains full backward compatibility:
-
-```bash
-# Old command still works
-python main_pipeline.py -m combined -g genes.txt -r mirnas.txt -t target.txt -d mirdb.txt -w mirwalk.txt
-
-# Enhanced features are optional
-python main_pipeline.py \
-    --mode combined \
-    --genes genes.txt \
-    --mirnas mirnas.txt \
-    --targetscan target.txt \
-    --mirdb mirdb.txt \
-    --mirwalk mirwalk.txt \
-    --analysis-mode both
-```
-
----
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Citation
-
-```bibtex
-@software{mitagent_enhanced_2024,
-  title={MiTAgent: Enhanced Modular miRNA Research Pipeline},
-  author={Jerry Zhang},
-  year={2024},
-  url={https://github.com/Jerryzhang158/mitagent},
-  version={2.0-enhanced},
-  note={Enhanced modular architecture with improved error handling and flexible execution}
-}
-```
-
-## Acknowledgments
-
-This enhanced version builds upon the original MiTAgent pipeline with significant architectural improvements including modular design, centralized configuration management, enhanced error handling, and flexible execution workflows.
-
-**Key Dependencies**:
-- **Database Resources**: TargetScan, miRDB, miRWalk, miRTarBase  
-- **Machine Learning**: Hugging Face Transformers, BERT models
-- **LLM Integration**: Ollama framework with local model deployment
-- **Visualization**: Cytoscape network export capabilities
-- **Development**: Enhanced Python architecture with component separation
-
----
-
-## Support
-
-- **Documentation**: This enhanced README with architectural details
-- **Bug Reports**: [Open an issue](https://github.com/Jerryzhang158/mitagent/issues) with component information
-- **Feature Requests**: [Submit enhancement requests](https://github.com/Jerryzhang158/mitagent/issues)
-- **Technical Support**: Include pipeline logs and configuration details
-
----
-
-**Enhanced Modular Architecture - More Reliable, Flexible, and Extensible!**
+For software attribution, cite this repository and the exact commit used: https://github.com/Jerryzhang158/mitagent. A manuscript citation should be added when its public bibliographic record is available; no publication DOI or release DOI is assigned here.
