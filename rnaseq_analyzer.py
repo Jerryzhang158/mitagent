@@ -4,6 +4,8 @@
 
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
@@ -16,6 +18,8 @@ import json
 import subprocess
 import tempfile
 import os
+import shutil
+import requests
 from scipy import stats
 from statsmodels.stats.multitest import multipletests
 warnings.filterwarnings('ignore')
@@ -66,6 +70,32 @@ HAS_R = False
 R_PATH = None
 R_ERROR = None
 
+def resolve_rscript_executable():
+    """Return Rscript from the active conda/Python environment when possible."""
+    candidates = []
+    env_rscript = os.environ.get("RNA_ANALYZER_RSCRIPT")
+    if env_rscript:
+        candidates.append(env_rscript)
+
+    python_root = Path(sys.executable).parent
+    candidates.extend([
+        python_root / "Scripts" / "Rscript.exe",
+        python_root / "Lib" / "R" / "bin" / "Rscript.exe",
+        python_root / "Lib" / "R" / "bin" / "x64" / "Rscript.exe",
+    ])
+
+    for command_name in ("Rscript", "Rscript.exe"):
+        found = shutil.which(command_name)
+        if found:
+            candidates.append(found)
+
+    for candidate in candidates:
+        candidate_path = Path(str(candidate))
+        if candidate_path.exists():
+            return str(candidate_path)
+
+    return "Rscript"
+
 def check_r_installation():
     """检查R是否安装并可用"""
     global HAS_R, R_PATH, R_ERROR
@@ -81,6 +111,8 @@ def check_r_installation():
         '/usr/local/bin/R',  # macOS常见路径
     ]
     
+    possible_r_paths.insert(0, resolve_rscript_executable())
+
     for r_path in possible_r_paths:
         try:
             # 测试R是否可用
@@ -125,6 +157,148 @@ check_r_installation()
 
 
 def create_deseq2_script():
+    return r'''
+suppressPackageStartupMessages({
+    library(DESeq2)
+    library(utils)
+})
+
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) != 6) {
+    cat("Usage: Rscript deseq2_analysis.R <count_file> <sample_info_file> <control_group> <treatment_group> <output_file> <config_file>\n")
+    quit(status = 1)
+}
+
+count_file <- args[1]
+sample_info_file <- args[2]
+control_group <- args[3]
+treatment_group <- args[4]
+output_file <- args[5]
+config_file <- args[6]
+
+fit_type <- "parametric"
+test_type <- "Wald"
+alpha <- 0.05
+independent_filtering <- TRUE
+shrink_lfc <- TRUE
+
+if (file.exists(config_file)) {
+    config <- jsonlite::fromJSON(config_file)
+    if (!is.null(config$deseq2$fit_type)) fit_type <- config$deseq2$fit_type
+    if (!is.null(config$deseq2$test)) test_type <- config$deseq2$test
+    if (!is.null(config$deseq2$alpha)) alpha <- config$deseq2$alpha
+    if (!is.null(config$deseq2$independent_filtering)) independent_filtering <- config$deseq2$independent_filtering
+    if (!is.null(config$deseq2$shrink_lfc)) shrink_lfc <- config$deseq2$shrink_lfc
+}
+
+tryCatch({
+    cat("Starting DESeq2 analysis...\n")
+    count_data <- read.csv(count_file, row.names = 1, stringsAsFactors = FALSE, check.names = FALSE)
+    sample_info <- read.csv(sample_info_file, row.names = 1, stringsAsFactors = FALSE, check.names = FALSE)
+
+    common_samples <- intersect(colnames(count_data), rownames(sample_info))
+    if (length(common_samples) == 0) {
+        stop("No overlapping samples between count matrix and sample info")
+    }
+
+    count_data <- count_data[, common_samples, drop = FALSE]
+    sample_info <- sample_info[common_samples, , drop = FALSE]
+    count_data <- round(as.matrix(count_data))
+    count_data[count_data < 0] <- 0
+    storage.mode(count_data) <- "integer"
+
+    sample_info$condition <- factor(sample_info$treatment, levels = c(control_group, treatment_group))
+    sample_info <- sample_info[!is.na(sample_info$condition), , drop = FALSE]
+    count_data <- count_data[, rownames(sample_info), drop = FALSE]
+
+    cat(sprintf("Control group: %s (%d samples)\n", control_group, sum(sample_info$condition == control_group)))
+    cat(sprintf("Treatment group: %s (%d samples)\n", treatment_group, sum(sample_info$condition == treatment_group)))
+    cat(sprintf("Genes before filtering: %d\n", nrow(count_data)))
+
+    dds <- DESeqDataSetFromMatrix(
+        countData = count_data,
+        colData = sample_info,
+        design = ~ condition
+    )
+
+    keep <- rowSums(counts(dds)) >= 10
+    dds <- dds[keep, ]
+    cat(sprintf("Genes after filtering: %d\n", nrow(dds)))
+
+    dds <- DESeq(dds, fitType = fit_type, test = test_type)
+    res <- results(
+        dds,
+        contrast = c("condition", treatment_group, control_group),
+        alpha = alpha,
+        independentFiltering = independent_filtering
+    )
+
+    if (isTRUE(shrink_lfc)) {
+        res <- tryCatch(
+            lfcShrink(
+                dds,
+                contrast = c("condition", treatment_group, control_group),
+                res = res,
+                type = "normal"
+            ),
+            error = function(e) {
+                cat(sprintf("LFC shrinkage skipped: %s\n", e$message))
+                res
+            }
+        )
+    }
+
+    res_df <- as.data.frame(res)
+    res_df$gene_id <- rownames(res_df)
+
+    normalized_counts <- counts(dds, normalized = TRUE)
+    control_samples <- rownames(sample_info)[sample_info$condition == control_group]
+    treatment_samples <- rownames(sample_info)[sample_info$condition == treatment_group]
+
+    res_df$control_mean <- rowMeans(normalized_counts[, control_samples, drop = FALSE])
+    res_df$treatment_mean <- rowMeans(normalized_counts[, treatment_samples, drop = FALSE])
+    res_df$foldChange <- 2^res_df$log2FoldChange
+
+    res_df <- res_df[, c(
+        "gene_id", "baseMean", "log2FoldChange", "foldChange",
+        "lfcSE", "stat", "pvalue", "padj",
+        "control_mean", "treatment_mean"
+    )]
+    res_df <- res_df[order(res_df$padj, na.last = TRUE), ]
+    write.csv(res_df, output_file, row.names = FALSE)
+
+    total_genes <- nrow(res_df)
+    significant_genes <- sum(res_df$padj < alpha, na.rm = TRUE)
+    upregulated <- sum(res_df$padj < alpha & res_df$log2FoldChange >= 1, na.rm = TRUE)
+    downregulated <- sum(res_df$padj < alpha & res_df$log2FoldChange <= -1, na.rm = TRUE)
+
+    cat("DESeq2 analysis completed!\n")
+    cat(sprintf("Total genes: %d\n", total_genes))
+    cat(sprintf("Significant genes: %d\n", significant_genes))
+    cat(sprintf("Upregulated genes: %d\n", upregulated))
+    cat(sprintf("Downregulated genes: %d\n", downregulated))
+
+    summary_file <- paste0(substr(output_file, 1, nchar(output_file) - 4), "_summary.txt")
+    writeLines(
+        c(
+            "DESeq2 Analysis Summary",
+            "======================",
+            paste("Control group:", control_group),
+            paste("Treatment group:", treatment_group),
+            paste("Total genes:", total_genes),
+            paste("Significant genes (padj <", alpha, "):", significant_genes),
+            paste("Upregulated genes (log2FC >= 1):", upregulated),
+            paste("Downregulated genes (log2FC <= -1):", downregulated),
+            paste("Analysis completed at:", Sys.time())
+        ),
+        summary_file
+    )
+}, error = function(e) {
+    cat("DESeq2 analysis failed:\n")
+    cat(paste("Error:", e$message, "\n"))
+    quit(status = 1)
+})
+'''
     """创建DESeq2分析的R脚本"""
     r_script = '''
 # DESeq2差异表达分析脚本
@@ -390,6 +564,18 @@ class HybridRNASeqAnalyzer:
             check_script_path = self.temp_dir / 'check_deseq2.R'
             with open(check_script_path, 'w', encoding='utf-8') as f:
                 f.write(r_check_script)
+
+            rscript_executable = resolve_rscript_executable()
+            result = subprocess.run([rscript_executable, str(check_script_path)],
+                                  capture_output=True, text=True, timeout=30)
+            output_text = result.stdout + result.stderr
+            if result.returncode == 0 and 'DESeq2_AVAILABLE' in output_text:
+                logger.info("DESeq2 available through Rscript")
+                for line in output_text.split('\n'):
+                    if 'DESeq2 version:' in line:
+                        logger.info(f"Version: {line.strip()}")
+                        break
+                return True
             
             # 运行检查
             result = subprocess.run([R_PATH, '--slave', '--no-restore', '--file=' + str(check_script_path)], 
@@ -736,6 +922,19 @@ class HybridRNASeqAnalyzer:
         
         return ordered_samples
 
+    def _format_sample_label(self, sample_name):
+        """Create readable labels for plots without changing real sample IDs."""
+        label = str(sample_name)
+        if label.startswith('RAW.LPS.BAI12p5uM.'):
+            return f"LPS+BAI 12.5 uM {label.rsplit('.', 1)[-1]}"
+        if label.startswith('RAW.LPS.BAI50uM.'):
+            return f"LPS+BAI 50 uM {label.rsplit('.', 1)[-1]}"
+        if label.startswith('RAW.LPS.BAI100uM.'):
+            return f"LPS+BAI 100 uM {label.rsplit('.', 1)[-1]}"
+        if label.startswith('RAW.LPS.'):
+            return f"RAW LPS {label.rsplit('.', 1)[-1]}"
+        return label.replace('12p5uM', '12.5 uM').replace('50uM', '50 uM').replace('100uM', '100 uM')
+
     def _add_group_separators(self, clustermap_obj, sample_info_ordered):
         """在热图中添加组间分割线"""
         try:
@@ -859,22 +1058,28 @@ class HybridRNASeqAnalyzer:
             
             # 运行R脚本 - 修复编码问题
             logger.info("执行R脚本...")
+            rscript_executable = resolve_rscript_executable()
+
             cmd = [
-                R_PATH, '--slave', '--no-restore',
-                '--file=' + str(r_script_file),
-                '--args',
+                rscript_executable,
+                str(r_script_file),
                 str(count_file),
                 str(sample_file),
                 control_group,
-                treatment_group,  
+                treatment_group,
                 str(output_file),
                 str(config_file)
             ]
             
             # 关键修复：设置正确的编码和环境变量
-            env = os.environ.copy()
-            env['LC_ALL'] = 'C'  # 使用C locale避免编码问题
-            env['LANG'] = 'C'
+            env = None
+            # Windows conda R can crash during startup when LC_ALL/LANG are
+            # forced to "C". Keep the activated conda environment untouched on
+            # Windows so R can find its runtime and locale files.
+            if os.name != 'nt':
+                env = os.environ.copy()
+                env['LC_ALL'] = 'C'  # 使用C locale避免编码问题
+                env['LANG'] = 'C'
             
             try:
                 # 首先尝试UTF-8编码
@@ -1337,6 +1542,9 @@ class HybridRNASeqAnalyzer:
         # 重新排列数据和样本信息
         plot_data_ordered = plot_data_scaled[ordered_samples]
         sample_info_ordered = sample_info.loc[ordered_samples]
+        display_data = plot_data_ordered.copy()
+        display_labels = [self._format_sample_label(sample) for sample in plot_data_ordered.columns]
+        display_data.columns = display_labels
         
         try:
             plt.figure(figsize=figsize)
@@ -1345,10 +1553,14 @@ class HybridRNASeqAnalyzer:
             unique_treatments = sample_info_ordered['treatment'].unique()
             colors = plt.cm.Set1(np.linspace(0, 1, len(unique_treatments)))
             treatment_colors = dict(zip(unique_treatments, colors))
-            col_colors = sample_info_ordered['treatment'].map(treatment_colors)
+            col_colors = pd.Series(
+                sample_info_ordered['treatment'].map(treatment_colors).to_list(),
+                index=display_labels,
+                name='treatment'
+            )
             
             # 绘制聚类热图 - 关闭列聚类保持自定义顺序
-            g = sns.clustermap(plot_data_ordered, 
+            g = sns.clustermap(display_data,
                               col_colors=col_colors,
                               cmap='RdBu_r', 
                               center=0,
@@ -1377,7 +1589,7 @@ class HybridRNASeqAnalyzer:
                 im = plt.imshow(plot_data_ordered.values, cmap='RdBu_r', aspect='auto')
                 plt.colorbar(im, label='Z-score')
                 plt.xticks(range(len(plot_data_ordered.columns)), 
-                          plot_data_ordered.columns, rotation=45)
+                          display_labels, rotation=45)
                 plt.yticks(range(len(plot_data_ordered.index)), 
                           plot_data_ordered.index)
                 # 移除标题设置
@@ -1387,6 +1599,62 @@ class HybridRNASeqAnalyzer:
                 logger.error(f"简化热图也失败: {e2}")
                 return None
     
+    def infer_organism(self, gene_ids=None):
+        """Infer Enrichr/MyGene organism from IDs or config."""
+        configured = self.config.get('organism') or self.config.get('species')
+        if configured:
+            text = str(configured).lower()
+            if text in {'mouse', 'mmu', 'mus_musculus'}:
+                return 'Mouse'
+            if text in {'human', 'hsa', 'homo_sapiens'}:
+                return 'Human'
+
+        if gene_ids is not None:
+            ids = [str(gene_id) for gene_id in list(gene_ids)[:2000]]
+            if any(gene_id.startswith('ENSMUSG') for gene_id in ids):
+                return 'Mouse'
+            if any(gene_id.startswith('ENSG') for gene_id in ids):
+                return 'Human'
+
+        return 'Human'
+
+    def default_enrichr_libraries(self, organism):
+        if str(organism).lower() == 'mouse':
+            return ['GO_Biological_Process_2023', 'KEGG_2019_Mouse']
+        return ['GO_Biological_Process_2023', 'KEGG_2021_Human']
+
+    def load_enrichr_library(self, library_name, organism='Human'):
+        """Load an Enrichr GMT library as a dict for stable GSEA prerank runs."""
+        cache_dir = Path(self.config.get('gene_set_cache_dir', 'gene_sets'))
+        cache_dir.mkdir(exist_ok=True)
+        cache_file = cache_dir / f"{organism}_{library_name}.gmt"
+
+        if cache_file.exists():
+            text = cache_file.read_text(encoding='utf-8')
+        else:
+            cached_matches = sorted(Path.cwd().glob(f"**/{organism}_{library_name}.gmt"))
+            if cached_matches:
+                text = cached_matches[0].read_text(encoding='utf-8')
+                cache_file.write_text(text, encoding='utf-8')
+            else:
+                database = 'Enrichr'
+                url = f"https://maayanlab.cloud/{database}/geneSetLibrary"
+                response = requests.get(
+                    url,
+                    params={'mode': 'text', 'libraryName': library_name},
+                    timeout=120,
+                )
+                response.raise_for_status()
+                text = response.text
+                cache_file.write_text(text, encoding='utf-8')
+
+        gene_sets = {}
+        for line in text.splitlines():
+            parts = line.strip().split('\t')
+            if len(parts) >= 3:
+                gene_sets[parts[0]] = [item.split(',')[0] for item in parts[2:] if item]
+        return gene_sets
+
     def convert_ensembl_to_symbols(self, ensembl_ids, batch_size=1000):
         """转换ENSEMBL ID为基因符号"""
         if not HAS_MYGENE:
@@ -1396,8 +1664,10 @@ class HybridRNASeqAnalyzer:
         try:
             mg = mygene.MyGeneInfo()
             clean_ids = [gene_id.split('.')[0] for gene_id in ensembl_ids]
+            mygene_species = self.infer_organism(clean_ids).lower()
             
             logger.info(f"开始转换 {len(clean_ids)} 个ENSEMBL ID...")
+            logger.info(f"MyGene species: {mygene_species}")
             
             all_converted = {}
             
@@ -1406,7 +1676,7 @@ class HybridRNASeqAnalyzer:
                 results = mg.querymany(clean_ids, 
                                      scopes='ensembl.gene', 
                                      fields='symbol', 
-                                     species='human',
+                                     species=mygene_species,
                                      returnall=True)
                 
                 for result in results['out']:
@@ -1419,7 +1689,7 @@ class HybridRNASeqAnalyzer:
                     results = mg.querymany(batch, 
                                          scopes='ensembl.gene', 
                                          fields='symbol', 
-                                         species='human',
+                                         species=mygene_species,
                                          returnall=True)
                     
                     for result in results['out']:
@@ -1455,6 +1725,11 @@ class HybridRNASeqAnalyzer:
         if len(gene_list) == 0:
             logger.error("基因列表为空")
             return None
+
+        organism = self.infer_organism(gene_list)
+        if gene_sets is None:
+            gene_sets = self.default_enrichr_libraries(organism)
+            logger.info(f"Using default {organism} Enrichr libraries: {gene_sets}")
         
         # 自动选择基因集
         if gene_sets is None:
@@ -1498,8 +1773,8 @@ class HybridRNASeqAnalyzer:
             # 过滤有效的基因符号
             valid_symbols = []
             for symbol in gene_symbols:
-                if (symbol is not None and pd.notna(symbol) and symbol != '' and 
-                    not symbol.startswith('ENSG')):  # 过滤掉未转换的ENSEMBL ID
+                symbol = str(symbol).strip() if symbol is not None and pd.notna(symbol) else ''
+                if symbol and not symbol.startswith('ENS'):  # 过滤掉未转换的ENSEMBL ID
                     valid_symbols.append(symbol)
             
             logger.info(f"转换结果: {len(gene_list)} -> {len(gene_symbols)} -> {len(valid_symbols)} 个有效基因符号")
@@ -1518,9 +1793,9 @@ class HybridRNASeqAnalyzer:
             logger.info("调用gseapy.enrichr进行富集分析...")
             enr = gp.enrichr(gene_list=valid_symbols,
                            gene_sets=gene_sets,
-                           organism='Human',
+                           organism=organism,
                            outdir=None,
-                           cutoff=0.05)
+                           cutoff=1.0)
             
             logger.info("富集分析调用完成，处理结果...")
             
@@ -1658,53 +1933,12 @@ class HybridRNASeqAnalyzer:
         except Exception as e:
             logger.error(f"获取基因集列表失败: {e}")
 
-    def _get_available_pathways(self):
-        """🆕 获取所有可用的通路数据库，优先WikiPathways"""
-        try:
-            available_libs = gp.get_library_name()
-            logger.info(f"总共有 {len(available_libs)} 个可用的基因集")
-            
-            # 查找各类基因集
-            wiki_sets = [lib for lib in available_libs if 'WikiPathway' in lib and 'Human' in lib]
-            kegg_sets = [lib for lib in available_libs if 'KEGG' in lib and 'Human' in lib]
-            hallmark_sets = [lib for lib in available_libs if 'Hallmark' in lib]
-            go_sets = [lib for lib in available_libs if 'GO_Biological_Process' in lib]
-            
-            logger.info(f"WikiPathways基因集: {wiki_sets}")
-            logger.info(f"KEGG基因集: {kegg_sets}")
-            logger.info(f"Hallmark基因集: {hallmark_sets}")
-            logger.info(f"GO基因集: {go_sets[:3]}...")  # 只显示前3个
-            
-            # 🎯 优先选择WikiPathways
-            selected = []
-            
-            # 1. 优先WikiPathways - 选择最新版本
-            if wiki_sets:
-                # 按版本排序，选择最新的
-                wiki_sorted = sorted(wiki_sets, reverse=True)  # 按名称排序，新版本在前
-                selected.append(wiki_sorted[0])
-                logger.info(f"✅ 选择WikiPathways: {wiki_sorted[0]}")
-            
-            # 2. 添加KEGG
-            if kegg_sets and len(selected) < 3:
-                kegg_sorted = sorted(kegg_sets, reverse=True)
-                selected.append(kegg_sorted[0])
-                logger.info(f"✅ 选择KEGG: {kegg_sorted[0]}")
-            
-            # 3. 添加Hallmark（通常较小，运行快）
-            if hallmark_sets and len(selected) < 3:
-                selected.append(hallmark_sets[0])
-                logger.info(f"✅ 选择Hallmark: {hallmark_sets[0]}")
-            
-            if not selected:
-                logger.error("❌ 没有找到合适的基因集")
-                return None
-                
-            return selected
-            
-        except Exception as e:
-            logger.error(f"获取可用通路失败: {e}")
-            return None
+    def _get_available_pathways(self, organism=None):
+        """Return stable GO/KEGG gene set libraries for ORA/GSEA."""
+        organism = organism or self.infer_organism()
+        selected = self.default_enrichr_libraries(organism)
+        logger.info(f"Using stable {organism} GO/KEGG libraries: {selected}")
+        return selected
 
     def _standardize_gsea_results(self, gs_res):
         """🆕 标准化GSEA结果字段名，处理不同版本的gseapy + 修复数据类型"""
@@ -1845,11 +2079,13 @@ class HybridRNASeqAnalyzer:
             return None
         
         try:
-            logger.info("开始修复版GSEA分析（WikiPathways优先）...")
+            logger.info("开始修复版GSEA分析（稳定GO/KEGG基因集）...")
             logger.info(f"参数: ranking_method={ranking_method}, permutation_num={permutation_num}, seed={random_seed}")
             
             # 1. 严格的数据清理
             ranked_data = de_result.copy()
+            organism = self.infer_organism(ranked_data.index.tolist())
+            logger.info(f"GSEA organism: {organism}")
             
             # 移除无穷大和NaN值
             ranked_data = ranked_data.replace([np.inf, -np.inf], np.nan)
@@ -1993,7 +2229,7 @@ class HybridRNASeqAnalyzer:
             
             # 6. 🎯 基因集选择 - 确保WikiPathways优先
             if gene_sets is None:
-                gene_sets = self._get_available_pathways()  # 使用新方法确保WikiPathways优先
+                gene_sets = self._get_available_pathways(organism)
             
             if not gene_sets:
                 logger.error("没有可用的基因集")
@@ -2008,11 +2244,12 @@ class HybridRNASeqAnalyzer:
                 try:
                     logger.info(f"运行GSEA ({i}/{len(gene_sets)}): {gene_set}")
                     logger.info("⏳ 正在运行GSEA，请耐心等待...")
+                    gene_set_input = self.load_enrichr_library(gene_set, organism=organism)
                     
                     # 关键：确保参数一致性
                     gs_res = gp.prerank(
                         rnk=rnk_df,                        # 使用我们准备的数据
-                        gene_sets=gene_set,                # 基因集
+                        gene_sets=gene_set_input,          # 基因集
                         processes=1,                       # 单进程确保一致性
                         permutation_num=permutation_num,   # 置换次数
                         outdir=None,                       # 不输出到文件
@@ -2187,6 +2424,15 @@ class HybridRNASeqAnalyzer:
             if result_df.empty:
                 logger.warning(f"基因集 {gene_set_name} 没有富集条目")
                 return None
+
+            if 'Term' not in result_df.columns and 'term' in result_df.columns:
+                result_df['Term'] = result_df['term']
+            if 'NES' not in result_df.columns and 'nes' in result_df.columns:
+                result_df['NES'] = result_df['nes']
+            if 'FDR q-val' not in result_df.columns and 'fdr' in result_df.columns:
+                result_df['FDR q-val'] = result_df['fdr']
+            if 'P-value' not in result_df.columns and 'pval' in result_df.columns:
+                result_df['P-value'] = result_df['pval']
             
             # 检查必需的列
             required_columns = ['Term']
@@ -2196,7 +2442,10 @@ class HybridRNASeqAnalyzer:
             score_column = None
             
             # 查找可用的得分列
-            possible_score_columns = ['Combined Score', 'Score', 'Enrichment Score', '-log10(P-value)']
+            possible_score_columns = [
+                'Combined Score', 'Score', 'NES', 'nes',
+                'Enrichment Score', 'es', '-log10(P-value)'
+            ]
             for col in possible_score_columns:
                 if col in result_df.columns:
                     score_column = col
@@ -2212,6 +2461,26 @@ class HybridRNASeqAnalyzer:
                 logger.error(f"富集结果缺少必需的列: {missing_columns}")
                 return None
                 
+            result_df[score_column] = pd.to_numeric(result_df[score_column], errors='coerce')
+            result_df = result_df.dropna(subset=[score_column])
+            if result_df.empty:
+                logger.warning(f"基因集 {gene_set_name} 的得分列没有有效数值")
+                return None
+
+            p_col = None
+            for candidate in ['Adjusted P-value', 'FDR q-val', 'fdr', 'padj', 'P-value', 'pval']:
+                if candidate in result_df.columns:
+                    p_col = candidate
+                    result_df[p_col] = pd.to_numeric(result_df[p_col], errors='coerce').fillna(1.0)
+                    break
+
+            if p_col:
+                result_df = result_df.sort_values(p_col, ascending=True)
+            elif score_column.lower() == 'nes':
+                result_df = result_df.reindex(result_df[score_column].abs().sort_values(ascending=False).index)
+            else:
+                result_df = result_df.sort_values(score_column, ascending=False)
+
             # 选择top_n个条目并排序
             original_length = len(result_df)
             if len(result_df) > top_n:
@@ -2228,8 +2497,7 @@ class HybridRNASeqAnalyzer:
             bars = plt.barh(y_pos, result_df[score_column])
             
             # 根据p值设置颜色（如果有的话）
-            if 'P-value' in result_df.columns or 'Adjusted P-value' in result_df.columns:
-                p_col = 'Adjusted P-value' if 'Adjusted P-value' in result_df.columns else 'P-value'
+            if p_col is not None:
                 p_values = pd.to_numeric(result_df[p_col], errors='coerce').fillna(1.0)
                 
                 if len(p_values) > 0 and p_values.min() < p_values.max():
@@ -2261,9 +2529,11 @@ class HybridRNASeqAnalyzer:
                     term_labels.append(str(term))
             
             plt.yticks(y_pos, term_labels, fontsize=label_fontsize)
-            plt.xlabel(score_column, fontsize=axis_fontsize)
+            x_label = 'NES' if score_column.lower() == 'nes' else score_column
+            plt.xlabel(x_label, fontsize=axis_fontsize)
             plt.xticks(fontsize=tick_fontsize)
-            plt.title(f'{gene_set_name} Enrichment Analysis (Top {len(result_df)})', 
+            analysis_label = 'GSEA' if score_column.lower() == 'nes' else 'Enrichment Analysis'
+            plt.title(f'{gene_set_name} {analysis_label} (Top {len(result_df)})',
                      fontsize=title_fontsize, fontweight='bold')
             plt.tight_layout()
             
@@ -2276,6 +2546,23 @@ class HybridRNASeqAnalyzer:
             logger.error(f"详细错误:\n{traceback.format_exc()}")
             return None
     
+    def _coerce_combined_treatment(self, sample_info, control_group, treatment_group):
+        """Allow --treatment BAI_all to mean all non-control treatment groups."""
+        if treatment_group in set(sample_info['treatment']):
+            return sample_info
+
+        treatment_lower = str(treatment_group).lower()
+        if treatment_lower in {"all", "treatment_all", "bai_all"} or treatment_lower.endswith("_all"):
+            combined = sample_info.copy()
+            treatment_mask = ~combined['treatment'].isin([control_group, 'Unknown'])
+            if treatment_mask.any():
+                combined.loc[treatment_mask, 'treatment'] = treatment_group
+                combined.loc[treatment_mask, 'group'] = treatment_group
+                logger.info(f"Combined {int(treatment_mask.sum())} non-control samples as {treatment_group}")
+                return combined
+
+        return sample_info
+
     def analyze_comparison(self, control_group, treatment_group, data_type='gene'):
         """进行组间比较分析 - 增强版"""
         logger.info(f"开始分析 {treatment_group} vs {control_group} ({data_type})")
@@ -2291,6 +2578,7 @@ class HybridRNASeqAnalyzer:
             
         # 创建样本信息 - 传递数据类型
         sample_info = self.create_sample_info(data, data_type)
+        sample_info = self._coerce_combined_treatment(sample_info, control_group, treatment_group)
         
         # 筛选相关样本
         relevant_samples = sample_info[
@@ -2408,7 +2696,7 @@ class HybridRNASeqAnalyzer:
                     data_type = 'Unknown'
                 
                 # 简化文件名：Gene_differential_expression_results.csv
-                filepath = output_path / f"{data_type}_differential_expression_results.csv"
+                filepath = output_path / f"{comparison}_differential_expression_results.csv"
                 result.to_csv(filepath)
                 logger.info(f"保存: {filepath.name}")
             except Exception as e:
@@ -2433,7 +2721,7 @@ class HybridRNASeqAnalyzer:
                                 # 清理基因集名称
                                 safe_gene_set = str(gene_set).replace(' ', '_').replace('/', '_').replace('-', '_')
                                 # 新命名格式：Gene_KEGG_2021_Human_enrichment.csv
-                                filename = f"{data_type}_{safe_gene_set}_enrichment.csv"
+                                filename = f"{comparison}_{safe_gene_set}_enrichment.csv"
                                 filepath = output_path / filename
                                 result_df.to_csv(filepath, index=False)
                                 logger.info(f"保存富集结果: {filename}")
@@ -2459,7 +2747,7 @@ class HybridRNASeqAnalyzer:
                                 # 清理基因集名称
                                 safe_gene_set = str(gene_set).replace(' ', '_').replace('/', '_').replace('-', '_')
                                 # 新命名格式：Gene_KEGG_2021_Human_GSEA.csv
-                                filename = f"{data_type}_{safe_gene_set}_GSEA.csv"
+                                filename = f"{comparison}_{safe_gene_set}_GSEA.csv"
                                 filepath = output_path / filename
                                 result_df.to_csv(filepath, index=False)
                                 logger.info(f"保存GSEA结果: {filename}")
@@ -2478,7 +2766,7 @@ class HybridRNASeqAnalyzer:
                             data_type = 'Unknown'
                         
                         # 简化命名：Gene_ranked_genes.rnk
-                        filename = f"{data_type}_ranked_genes.rnk"
+                        filename = f"{comparison}_ranked_genes.rnk"
                         filepath = output_path / filename
                         gsea.save_ranked_genes(filepath)
                         logger.info(f"保存ranked基因: {filename}")
@@ -2847,15 +3135,19 @@ def main():
             
             # 生成图表
             for comparison_key, result in results.items():
-                parts = comparison_key.split('_')
-                treatment, control, data_type = parts[0], parts[2], parts[3]
+                if comparison_key.endswith('_gene'):
+                    data_type = 'gene'
+                elif comparison_key.endswith('_mirna'):
+                    data_type = 'mirna'
+                else:
+                    data_type = 'gene'
                 
                 # 火山图
                 logger.info(f"生成火山图: {comparison_key}")
                 fig = analyzer.plot_volcano(result['de_result'])  # 移除标题参数
                 if fig:
                     # Modified line for Volcano Plot
-                    filename = "mrna_volcano_plot.png" if data_type == 'gene' else "mirna_volcano_plot.png"
+                    filename = f"{comparison_key}_volcano_plot.png"
                     fig.savefig(f"{args.output_dir}/{filename}", 
                                dpi=300, bbox_inches='tight')
                     plt.close()
@@ -2865,7 +3157,7 @@ def main():
                 fig = analyzer.plot_ma(result['de_result'])  # 移除标题参数
                 if fig:
                     # Modified line for MA Plot
-                    filename = "mrna_ma_plot.png" if data_type == 'gene' else "mirna_ma_plot.png"
+                    filename = f"{comparison_key}_ma_plot.png"
                     fig.savefig(f"{args.output_dir}/{filename}", 
                                dpi=300, bbox_inches='tight')
                     plt.close()
@@ -2875,7 +3167,7 @@ def main():
                 fig = analyzer.plot_heatmap(result['de_result'], data_type)  # 移除标题参数
                 if fig:
                     # Modified line for Heatmap
-                    filename = "mrna_heatmap.png" if data_type == 'gene' else "mirna_heatmap.png"
+                    filename = f"{comparison_key}_heatmap.png"
                     fig.savefig(f"{args.output_dir}/{filename}", 
                                dpi=300, bbox_inches='tight')
                     plt.close()
@@ -2916,6 +3208,18 @@ def main():
                                     fig.savefig(f"{args.output_dir}/{comparison}_{safe_gene_set}_enrichment.png", 
                                                dpi=300, bbox_inches='tight')
                                     plt.close()
+
+                if analyzer.gsea_results:
+                    logger.info("生成GSEA富集图表...")
+                    for comparison, gsea_result in analyzer.gsea_results.items():
+                        if gsea_result and hasattr(gsea_result, 'results'):
+                            for gene_set in gsea_result.results.keys():
+                                fig = analyzer.plot_enrichment(gsea_result, gene_set)
+                                if fig:
+                                    safe_gene_set = gene_set.replace(' ', '_').replace('/', '_')
+                                    fig.savefig(f"{args.output_dir}/{comparison}_{safe_gene_set}_GSEA_enrichment.png",
+                                               dpi=300, bbox_inches='tight')
+                                    plt.close()
             
             logger.info("="*60)
             logger.info("第四阶段: 保存所有结果")
@@ -2949,22 +3253,7 @@ def main():
                     logger.info(f"  📝 排序文件: {comparison}_ranked_genes.rnk")
             
             logger.info("📝 提示: 使用生成的.rnk文件与其他工具结果比较可验证一致性")
-            
-            # 检查是否成功使用WikiPathways
-            wikipathway_found = False
-            for comparison, gsea_result in analyzer.gsea_results.items():
-                if hasattr(gsea_result, 'parameters'):
-                    gene_sets = gsea_result.parameters.get('gene_sets', [])
-                    wiki_sets = [gs for gs in gene_sets if 'WikiPathway' in gs]
-                    if wiki_sets:
-                        wikipathway_found = True
-                        logger.info(f"🎯 成功使用WikiPathways数据库: {wiki_sets}")
-                        break
-            
-            if not wikipathway_found:
-                logger.warning("⚠️ 未能使用WikiPathways数据库")
-                logger.info("可能原因: WikiPathways在当前gseapy版本中名称已更改")
-                logger.info("建议运行: python rnaseq_analyzer.py --check-deps 查看可用基因集")
+            logger.info("当前默认使用稳定的GO/KEGG库，不再自动混入WikiPathways。")
         # 在保存结果之后，添加生物标志物分析
         if HAS_BIOMARKER_MODULES and analyzer.de_results:
             

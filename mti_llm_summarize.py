@@ -8,12 +8,14 @@ import io
 import re
 from dataclasses import dataclass
 from langchain_community.llms import Ollama
-from langchain.callbacks.manager import CallbackManager
-from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
+from langchain_core.callbacks.manager import CallbackManager
+from langchain_core.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 
 # 设置UTF-8编码
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+if __name__ == '__main__':
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8')
 
 def extract_mirna_simplified(mirna_full):
     """提取简化的miRNA名称，与pipeline文件命名一致"""
@@ -45,7 +47,7 @@ class MTISummary:
 class MTILLMSummarizer:
     """使用LLM总结MTI关系的工具"""
     
-    def __init__(self, model_name="qwen3:8b", temperature=0):
+    def __init__(self, model_name="qwen3.5:9b", temperature=0):
         """初始化LLM总结器"""
         self.model_name = model_name
         self.temperature = temperature
