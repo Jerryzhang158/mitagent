@@ -1,0 +1,21 @@
+# LLM interpretation and interactive research utilities.
+langchain-community==0.3.27
+langchain-core==0.3.72
+langchain==0.3.27
+tiktoken>=0.7,<1
+# Upstream expression analysis and visualization.
+scipy>=1.10,<2
+matplotlib>=3.7,<4
+seaborn>=0.12,<1
+statsmodels>=0.14,<1
+PyYAML>=6,<7
+gseapy>=1.0.6,<2
+mygene>=3.2,<4
+networkx>=3,<4
+python-louvain>=0.16,<1
+lifelines>=0.27,<1
+pyvis>=0.3,<1
+# Functional keyword extraction.
+scikit-learn==1.6.1
+yake>=0.4,<1
+wordcloud>=1.9,<2

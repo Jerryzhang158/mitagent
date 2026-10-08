@@ -3,16 +3,27 @@
 Step 2: 从PubMed获取相关文献摘要
 """
 
-import requests
 import xml.etree.ElementTree as ET
 import time
 import os
-import pandas as pd
-from typing import List, Dict, Optional
+import json
+import csv
+from typing import Any, List, Dict, Optional
 from urllib.parse import quote
+
+try:
+    import requests
+except ImportError:  # Local backend does not require requests.
+    requests = None
+
+try:
+    import pandas as pd
+except ImportError:  # Standard-library CSV fallbacks keep local mining usable.
+    pd = None
 
 from config import PipelineConfig
 from utils import Logger, TextProcessor
+from local_pubmed_backend import LocalPubMedBackend, normalize_mirna
 
 class PubMedMiner:
     """PubMed文献挖掘器"""
@@ -22,6 +33,12 @@ class PubMedMiner:
         self.output_dir = output_dir
         self.logger = logger
         self.base_url = self.config.PUBMED_BASE_URL
+        self.backend_name = "eutils"
+        self.last_jsonl_file = None
+        self.last_match_types = []
+        self.last_txt_file = None
+        self.last_error = ""
+        self.requires_delay = True
         
         # 确保输出目录存在
         os.makedirs(self.output_dir, exist_ok=True)
@@ -32,6 +49,16 @@ class PubMedMiner:
     
     def query_pubmed(self, gene_name: str, mirna: str, max_articles: int = 50) -> int:
         """查询PubMed文献"""
+        self.last_txt_file = None
+        self.last_jsonl_file = None
+        self.last_match_types = []
+        self.last_error = ""
+        if requests is None:
+            if self.logger:
+                self.logger.error(
+                    "The requests package is required for the E-utilities backend"
+                )
+            return 0
         # 提取miRNA搜索词
         mirna_search = self.extract_mirna_for_search(mirna)
         if not mirna_search:
@@ -65,10 +92,13 @@ class PubMedMiner:
 
             # 下载并保存文章
             article_count = self._download_articles(idlist, gene_name, mirna_search, mirna)
+            if article_count > 0:
+                self.last_txt_file = f"{gene_name}_{mirna_search}.txt"
             
             return article_count
             
         except Exception as e:
+            self.last_error = f"{type(e).__name__}: {e}"
             if self.logger:
                 self.logger.error(f"  Error querying PubMed: {e}")
             return 0
@@ -171,14 +201,146 @@ class PubMedMiner:
         
         return stats
 
+
+class LocalPubMedMiner(PubMedMiner):
+    """Compatibility writer backed by the local PubMed FTS5 database."""
+
+    def __init__(self, output_dir: str, database_path: str,
+                 logger: Optional[Logger] = None,
+                 full_mirna_filenames: bool = False,
+                 match_mode: str = "exact_then_family"):
+        super().__init__(output_dir, logger)
+        self.backend = LocalPubMedBackend(database_path)
+        self.backend_name = "local"
+        self.requires_delay = False
+        self.full_mirna_filenames = full_mirna_filenames
+        self.match_mode = match_mode
+
+    def query_pubmed(self, gene_name: str, mirna: str,
+                     max_articles: int = 50) -> int:
+        mirna_search = self.extract_mirna_for_search(mirna)
+        self.last_txt_file = None
+        self.last_jsonl_file = None
+        self.last_match_types = []
+        self.last_error = ""
+        if not mirna_search:
+            if self.logger:
+                self.logger.warning(f"Could not extract search term from miRNA: {mirna}")
+            return 0
+
+        filename_mirna = (
+            normalize_mirna(mirna).canonical
+            if self.full_mirna_filenames
+            else mirna_search
+        )
+        stem = f"{gene_name}_{filename_mirna}"
+        txt_path = os.path.join(self.output_dir, f"{stem}.txt")
+        jsonl_path = os.path.join(self.output_dir, f"{stem}.jsonl")
+        try:
+            if self.logger:
+                if self.match_mode == "exact_only":
+                    match_description = "exact miRNA name only"
+                elif self.match_mode == "core_only":
+                    match_description = f"core family only: {mirna_search}"
+                else:
+                    match_description = f"exact, then core family: {mirna_search}"
+                self.logger.info(
+                    f"  Local query: {gene_name} + {mirna} "
+                    f"({match_description})"
+                )
+            hits = self.backend.search_pair(
+                gene_name,
+                mirna,
+                max_articles,
+                match_mode=self.match_mode,
+            )
+            if not hits:
+                for stale_path in (txt_path, jsonl_path):
+                    if os.path.exists(stale_path):
+                        os.remove(stale_path)
+                if self.logger:
+                    self.logger.info(f"  Found 0 local articles for {gene_name} and {mirna}")
+                return 0
+
+            self._write_local_results(txt_path, jsonl_path, hits)
+            self.last_txt_file = os.path.basename(txt_path)
+            self.last_jsonl_file = os.path.basename(jsonl_path)
+            self.last_match_types = list(
+                dict.fromkeys(hit["match_type"] for hit in hits)
+            )
+            if self.logger:
+                exact_count = sum(
+                    hit["match_type"].startswith("exact_") for hit in hits
+                )
+                self.logger.info(
+                    f"  Found {len(hits)} local articles: "
+                    f"exact_mature={exact_count}, "
+                    f"core_family={len(hits) - exact_count}"
+                )
+            return len(hits)
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            if self.logger:
+                self.logger.error(f"  Error querying local PubMed: {exc}")
+            return 0
+
+    def _write_local_results(self, txt_path: str, jsonl_path: str,
+                             hits: List[Dict[str, Any]]) -> None:
+        txt_tmp = txt_path + ".tmp"
+        jsonl_tmp = jsonl_path + ".tmp"
+        try:
+            with open(txt_tmp, "w", encoding=self.config.DEFAULT_ENCODING,
+                      newline="\n") as txt_handle, open(
+                jsonl_tmp, "w", encoding="utf-8", newline="\n"
+            ) as jsonl_handle:
+                for hit in hits:
+                    txt_handle.write((hit.get("title") or "[No title available]").strip())
+                    txt_handle.write("\nAbstract\n")
+                    txt_handle.write(
+                        (hit.get("complete_abstract") or "[No abstract available]").strip()
+                    )
+                    txt_handle.write("\n\n")
+                    jsonl_handle.write(
+                        json.dumps(
+                            hit,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                    )
+                    jsonl_handle.write("\n")
+            os.replace(txt_tmp, txt_path)
+            os.replace(jsonl_tmp, jsonl_path)
+        except BaseException:
+            for temporary in (txt_tmp, jsonl_tmp):
+                if os.path.exists(temporary):
+                    os.remove(temporary)
+            raise
+
 class LiteratureMiner:
     """文献挖掘主控制器"""
     
-    def __init__(self, output_dir: str, logger: Optional[Logger] = None):
+    def __init__(self, output_dir: str, logger: Optional[Logger] = None,
+                 backend: Optional[str] = None, database_path: Optional[str] = None):
         self.config = PipelineConfig()
         self.output_dir = output_dir
         self.logger = logger
-        self.pubmed_miner = PubMedMiner(output_dir, logger)
+        backend_name = (backend or self.config.PUBMED_BACKEND).lower()
+        if backend_name == "local":
+            self.pubmed_miner = LocalPubMedMiner(
+                output_dir,
+                database_path or self.config.PUBMED_LOCAL_DB,
+                logger,
+            )
+        elif backend_name in {"eutils", "online"}:
+            self.pubmed_miner = PubMedMiner(output_dir, logger)
+        else:
+            raise ValueError(
+                f"Unknown PubMed backend {backend_name!r}; use 'local' or 'eutils'"
+            )
+
+        if self.logger:
+            self.logger.info(f"PubMed backend: {self.pubmed_miner.backend_name}")
         
         # 创建输出目录
         os.makedirs(output_dir, exist_ok=True)
@@ -221,6 +383,9 @@ class LiteratureMiner:
                     'Validation_Strength': mti.get('Validation_Strength', 'Unknown'),
                     'Articles_Found': 0,
                     'File': None,
+                    'JSONL_File': None,
+                    'Backend': self.pubmed_miner.backend_name,
+                    'Match_Types': '',
                     'Error': '; '.join(validation['issues'])
                 })
                 continue
@@ -247,11 +412,16 @@ class LiteratureMiner:
                 'miRTarBase_Validation': mti.get('miRTarBase_Validation', False),
                 'Validation_Strength': mti.get('Validation_Strength', 'Unknown'),
                 'Articles_Found': article_count,
-                'File': f"{gene}_{mirna_for_search}.txt" if article_count > 0 else None
+                'File': self.pubmed_miner.last_txt_file,
+                'JSONL_File': self.pubmed_miner.last_jsonl_file,
+                'Backend': self.pubmed_miner.backend_name,
+                'Match_Types': ','.join(self.pubmed_miner.last_match_types),
+                'Error': getattr(self.pubmed_miner, 'last_error', ''),
             })
             
             # 添加延迟避免过快请求
-            time.sleep(self.config.PUBMED_DELAY)
+            if self.pubmed_miner.requires_delay:
+                time.sleep(self.config.PUBMED_DELAY)
         
         # 保存挖掘结果摘要
         self._save_mining_summary(mining_results)
@@ -266,9 +436,29 @@ class LiteratureMiner:
     
     def _save_mining_summary(self, mining_results: List[Dict[str, any]]):
         """保存挖掘结果摘要"""
-        mining_summary = pd.DataFrame(mining_results)
         summary_file = os.path.join(self.output_dir, "mining_summary.csv")
-        mining_summary.to_csv(summary_file, index=False, encoding=self.config.DEFAULT_ENCODING)
+        if pd is not None:
+            mining_summary = pd.DataFrame(mining_results)
+            mining_summary.to_csv(
+                summary_file,
+                index=False,
+                encoding=self.config.DEFAULT_ENCODING,
+            )
+        else:
+            fieldnames = list(
+                dict.fromkeys(
+                    key for result in mining_results for key in result.keys()
+                )
+            )
+            with open(
+                summary_file,
+                "w",
+                newline="",
+                encoding=self.config.DEFAULT_ENCODING,
+            ) as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(mining_results)
         
         if self.logger:
             self.logger.info(f"Mining summary saved to: {summary_file}")
@@ -320,37 +510,50 @@ class LiteratureMiner:
             return validation_results
         
         try:
-            summary_df = pd.read_csv(summary_file)
-            
-            for _, row in summary_df.iterrows():
-                filename = row.get('File')
-                if not filename:
-                    continue
-                
-                filepath = os.path.join(self.output_dir, filename)
-                
-                if not os.path.exists(filepath):
-                    validation_results['missing_files'].append(filename)
-                    continue
-                
-                try:
-                    file_size = os.path.getsize(filepath)
-                    if file_size == 0:
-                        validation_results['empty_files'].append(filename)
+            if pd is not None:
+                rows = (row for _, row in pd.read_csv(summary_file).iterrows())
+            else:
+                summary_handle = open(
+                    summary_file,
+                    "r",
+                    newline="",
+                    encoding=self.config.DEFAULT_ENCODING,
+                )
+                rows = csv.DictReader(summary_handle)
+
+            try:
+                for row in rows:
+                    filename = row.get('File')
+                    if not filename or (pd is not None and pd.isna(filename)):
+                        continue
+
+                    filepath = os.path.join(self.output_dir, filename)
+
+                    if not os.path.exists(filepath):
+                        validation_results['missing_files'].append(filename)
                         continue
                     
-                    # 尝试读取文件内容
-                    with open(filepath, 'r', encoding=self.config.DEFAULT_ENCODING) as f:
-                        content = f.read(100)  # 只读取前100个字符进行验证
-                        if content.strip():
-                            validation_results['valid_files'].append(filename)
-                        else:
+                    try:
+                        file_size = os.path.getsize(filepath)
+                        if file_size == 0:
                             validation_results['empty_files'].append(filename)
-                
-                except Exception as e:
-                    validation_results['corrupted_files'].append((filename, str(e)))
-                    if self.logger:
-                        self.logger.warning(f"File corruption detected in {filename}: {e}")
+                            continue
+
+                        # 尝试读取文件内容
+                        with open(filepath, 'r', encoding=self.config.DEFAULT_ENCODING) as f:
+                            content = f.read(100)  # 只读取前100个字符进行验证
+                            if content.strip():
+                                validation_results['valid_files'].append(filename)
+                            else:
+                                validation_results['empty_files'].append(filename)
+
+                    except Exception as e:
+                        validation_results['corrupted_files'].append((filename, str(e)))
+                        if self.logger:
+                            self.logger.warning(f"File corruption detected in {filename}: {e}")
+            finally:
+                if pd is None:
+                    summary_handle.close()
         
         except Exception as e:
             if self.logger:
@@ -419,13 +622,18 @@ class LiteratureMiner:
                 result_copy = result.copy()
                 result_copy['Articles_Found'] = article_count
                 if article_count > 0:
-                    mirna_search = self.pubmed_miner.extract_mirna_for_search(mirna_full)
-                    result_copy['File'] = f"{gene}_{mirna_search}.txt"
+                    result_copy['File'] = self.pubmed_miner.last_txt_file
+                    result_copy['JSONL_File'] = self.pubmed_miner.last_jsonl_file
+                    result_copy['Backend'] = self.pubmed_miner.backend_name
+                    result_copy['Match_Types'] = ','.join(
+                        self.pubmed_miner.last_match_types
+                    )
                     result_copy.pop('Error', None)  # 移除错误信息
                 
                 updated_results.append(result_copy)
                 
-                time.sleep(self.config.PUBMED_DELAY)
+                if self.pubmed_miner.requires_delay:
+                    time.sleep(self.config.PUBMED_DELAY)
         
         # 保存更新的摘要
         self._save_mining_summary(updated_results)

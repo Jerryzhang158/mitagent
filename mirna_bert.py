@@ -7,7 +7,7 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import nltk
-from nltk.tokenize import sent_tokenize
+from nltk.tokenize import sent_tokenize as nltk_sent_tokenize
 from typing import List, Dict, Tuple, Optional
 import pandas as pd
 from dataclasses import dataclass
@@ -19,8 +19,18 @@ warnings.filterwarnings('ignore')
 try:
     nltk.data.find('tokenizers/punkt')
 except LookupError:
-    print("下载NLTK punkt数据...")
-    nltk.download('punkt', quiet=True)
+    pass
+
+def sent_tokenize(text: str) -> List[str]:
+    """Split sentences without making NLTK downloader network requests."""
+    try:
+        return nltk_sent_tokenize(text)
+    except LookupError:
+        return [
+            sentence.strip()
+            for sentence in re.split(r'(?<=[.!?])\s+|\n+', text)
+            if sentence.strip()
+        ]
 
 @dataclass
 class MTIValidation:
@@ -628,8 +638,9 @@ class MTIValidator:
             return mirna.lower()  # let-7系列保持小写
         return mirna
     
-    def validate_mti_batch(self, abstracts_dict: Dict[str, List[str]], 
-                         functions: List[str] = None) -> pd.DataFrame:
+    def validate_mti_batch(self, abstracts_dict: Dict[str, List[str]],
+                         functions: List[str] = None,
+                         valid_threshold: float = 30) -> pd.DataFrame:
         """
         批量验证MTI
         
@@ -657,7 +668,8 @@ class MTIValidator:
                 'Gene_Relation_Score': validation.gene_relation_score,
                 'Evidence_Count': validation.evidence_count,
                 'Confidence_Level': validation.confidence_level,
-                'Valid': validation.overall_score >= 50,  # 50分以上认为有效
+                'Valid': validation.overall_score >= valid_threshold,
+                'Validation_Threshold': valid_threshold,
                 'Abstract_Count': len(abstracts)
             }
             
@@ -716,7 +728,15 @@ def main():
     parser.add_argument('-f', '--functions', default='', help='功能列表，逗号分隔 (例如: "immune,ferroptosis,steroid regulation")')
     parser.add_argument('--batch', action='store_true', help='批量处理模式')
     parser.add_argument('--batch-file', help='批量处理输入文件(CSV格式: mirna,gene,file_path)')
+    parser.add_argument(
+        '--valid-threshold',
+        type=float,
+        default=30,
+        help='Minimum Overall_Score used for the Valid flag (default: 30).',
+    )
     
+    parser.add_argument('--model', default='NeuML/pubmedbert-base-embeddings',
+                        help='SentenceTransformer model ID or local model directory')
     args = parser.parse_args()
     
     # 验证参数
@@ -728,7 +748,7 @@ def main():
             parser.error("单个MTI模式需要提供 -i/--input, -m/--mirna, -g/--gene 参数")
     
     # 初始化验证器
-    validator = MTIValidator()
+    validator = MTIValidator(model_name=args.model)
     
     if args.batch and args.batch_file:
         # 批量处理模式
@@ -748,7 +768,11 @@ def main():
         
         # 执行批量验证
         functions = [f.strip() for f in args.functions.split(',') if f.strip()]
-        results_df = validator.validate_mti_batch(abstracts_dict, functions)
+        results_df = validator.validate_mti_batch(
+            abstracts_dict,
+            functions,
+            valid_threshold=args.valid_threshold,
+        )
         
         # 保存结果
         results_df.to_csv(args.output, index=False)
@@ -872,7 +896,7 @@ def main():
             f.write(f"基因关系得分: {validation.gene_relation_score:.2f}/100\n")
             f.write(f"置信度等级: {validation.confidence_level}\n")
             f.write(f"证据数量: {validation.evidence_count}\n")
-            f.write(f"验证结果: {'有效' if validation.overall_score >= 50 else '证据不足'}\n\n")
+            f.write(f"验证结果: {'有效' if validation.overall_score >= args.valid_threshold else '证据不足'}\n\n")
             
             f.write("-"*80 + "\n")
             f.write("详细得分:\n")
@@ -903,7 +927,7 @@ def main():
             'Overall_Score': validation.overall_score,
             'Gene_Relation_Score': validation.gene_relation_score,
             'Confidence_Level': validation.confidence_level,
-            'Valid': validation.overall_score >= 50
+            'Valid': validation.overall_score >= args.valid_threshold
         }])
         result_df.to_csv(args.output, index=False)
         print(f"CSV结果已保存至: {args.output}") == validator.validate_mti(abstracts, args.mirna, args.gene, functions)
@@ -919,7 +943,7 @@ def main():
             f.write(f"基因关系得分: {validation.gene_relation_score:.2f}/100\n")
             f.write(f"置信度等级: {validation.confidence_level}\n")
             f.write(f"证据数量: {validation.evidence_count}\n")
-            f.write(f"验证结果: {'有效' if validation.overall_score >= 50 else '证据不足'}\n\n")
+            f.write(f"验证结果: {'有效' if validation.overall_score >= args.valid_threshold else '证据不足'}\n\n")
             
             f.write("-"*80 + "\n")
             f.write("详细得分:\n")
@@ -950,7 +974,7 @@ def main():
             'Overall_Score': validation.overall_score,
             'Gene_Relation_Score': validation.gene_relation_score,
             'Confidence_Level': validation.confidence_level,
-            'Valid': validation.overall_score >= 50
+            'Valid': validation.overall_score >= args.valid_threshold
         }])
         result_df.to_csv(args.output, index=False)
         print(f"CSV结果已保存至: {args.output}")
